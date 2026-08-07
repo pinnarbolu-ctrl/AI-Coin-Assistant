@@ -271,7 +271,7 @@ def haber_puani(symbol):
 
 # ==========================================
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
-# Commit: EMA20/50 + RSI14 + MACD + ADX14 + ATR14
+# Commit: EMA20/50 + RSI14 + MACD + ADX14 + ATR14 + AI Karar
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
 # ==========================================
 
@@ -400,6 +400,150 @@ def teknik_analiz_hesapla(symbol):
     except Exception as e:
         print(f"Teknik analiz hata ({symbol}):", e)
         return None
+
+
+# ==========================================
+# H MANTIĞI - KARAR MOTORU
+# Radar ilk adayları bulur; bu katman teknik yapıyı AL / BEKLE / SAT-PAS kararına çevirir.
+# ==========================================
+
+def h_karar_hesapla(aday):
+    teknik = aday.get("teknik")
+    if not teknik:
+        return {
+            "ai_skoru": 0,
+            "karar": "🟡 BEKLE",
+            "risk": "Bilinmiyor",
+            "nedenler": ["Teknik veri yetersiz"]
+        }
+
+    ema20 = teknik.get("ema20")
+    ema50 = teknik.get("ema50")
+    rsi = teknik.get("rsi")
+    macd_hist = teknik.get("macd_hist")
+    adx = teknik.get("adx")
+    atr_yuzde = teknik.get("atr_yuzde")
+    fiyat = aday.get("fiyat", 0)
+    radar = aday.get("radar_skoru", 0)
+
+    skor = 45.0
+    nedenler = []
+
+    # Radar katmanı: ilk aday kalitesini ikinci aşamaya kontrollü biçimde taşır.
+    skor += max(0, min((radar - 55) * 0.40, 12))
+
+    # EMA trend yapısı
+    if ema20 is not None and ema50 is not None:
+        if ema20 > ema50:
+            skor += 16
+            nedenler.append("EMA trendi yukarı")
+        else:
+            skor -= 16
+            nedenler.append("EMA trendi aşağı")
+
+        if fiyat and ema20:
+            if fiyat > ema20:
+                skor += 5
+            else:
+                skor -= 7
+                nedenler.append("Fiyat EMA20 altında")
+
+    # RSI: güçlü ama aşırı şişmemiş bölge tercih edilir.
+    if rsi is not None:
+        if 50 <= rsi <= 65:
+            skor += 13
+            nedenler.append("RSI sağlıklı güçlü bölgede")
+        elif 45 <= rsi < 50:
+            skor += 6
+        elif 65 < rsi <= 72:
+            skor += 5
+            nedenler.append("RSI güçlü ama ısınıyor")
+        elif rsi > 78:
+            skor -= 14
+            nedenler.append("RSI aşırı alım riski")
+        elif rsi < 40:
+            skor -= 10
+            nedenler.append("RSI zayıf")
+
+    # MACD momentum teyidi
+    if macd_hist is not None:
+        if macd_hist > 0:
+            skor += 14
+            nedenler.append("MACD pozitif")
+        else:
+            skor -= 14
+            nedenler.append("MACD negatif")
+
+    # ADX: trendin gerçekten güçlü olup olmadığını ölçer.
+    if adx is not None:
+        if adx >= 30:
+            skor += 11
+            nedenler.append("Trend çok güçlü")
+        elif adx >= 25:
+            skor += 8
+            nedenler.append("Trend güçlü")
+        elif adx >= 20:
+            skor += 4
+        elif adx < 15:
+            skor -= 7
+            nedenler.append("Trend gücü düşük")
+
+    # ATR: hareket fırsat yaratmalı ama aşırı riskli olmamalı.
+    if atr_yuzde is not None:
+        if 1 <= atr_yuzde <= 4.5:
+            skor += 4
+        elif atr_yuzde > 7:
+            skor -= 10
+            nedenler.append("Volatilite çok yüksek")
+        elif atr_yuzde > 5:
+            skor -= 5
+            nedenler.append("Volatilite yüksek")
+
+    # Radar'ın göreceli güç teyitlerinden küçük destek.
+    if aday.get("btcden_guclu"):
+        skor += 4
+    if aday.get("lider_skoru", 0) >= 7:
+        skor += 4
+    elif aday.get("lider_skoru", 0) >= 5:
+        skor += 2
+
+    # Çok hızlı yükselmiş adaylarda geç giriş riskini azalt.
+    if aday.get("degisim1", 0) > 4:
+        skor -= 7
+        nedenler.append("1 saatlik hareket fazla hızlı")
+    if aday.get("degisim24", 0) > 15:
+        skor -= 5
+        nedenler.append("24 saatlik hareket yüksek")
+
+    skor = round(max(0, min(skor, 100)), 1)
+
+    # Karar eşikleri
+    if skor >= 75:
+        karar = "🟢 AL"
+    elif skor >= 55:
+        karar = "🟡 BEKLE"
+    else:
+        karar = "🔴 SAT / PAS"
+
+    # Risk
+    if atr_yuzde is None:
+        risk = "Bilinmiyor"
+    elif atr_yuzde <= 3:
+        risk = "Düşük"
+    elif atr_yuzde <= 5:
+        risk = "Orta"
+    else:
+        risk = "Yüksek"
+
+    if not nedenler:
+        nedenler.append("Teknik göstergeler karışık")
+
+    return {
+        "ai_skoru": skor,
+        "karar": karar,
+        "risk": risk,
+        "nedenler": nedenler[:4]
+    }
 
 
 while True:
@@ -594,11 +738,18 @@ while True:
         )
         top10 = adaylar[:10]
 
-        # H mantığı: Radar'ın seçtiği Top 10 üzerinde ikinci analiz katmanı.
-        # Bu committe göstergeler sadece hesaplanır; AL/BEKLE/SAT kararı sonraki committe verilecek.
+        # H mantığı: Radar'ın seçtiği Top 10 üzerinde teknik analiz + karar motoru.
         for a in top10:
             teknik = teknik_analiz_hesapla(a["symbol"])
             a["teknik"] = teknik
+            karar = h_karar_hesapla(a)
+            a.update(karar)
+
+        # İlk aday sıralamasını Radar yapar; H motorundan sonra en güçlü teknik fırsat üste çıkar.
+        top10.sort(
+            key=lambda x: (x.get("ai_skoru", 0), x.get("radar_skoru", 0)),
+            reverse=True
+        )
 
         if not top10:
             print("Şu an uygun aday yok.")
@@ -620,14 +771,17 @@ while True:
 
                 teknik = a.get("teknik")
                 if teknik:
-                    ema_yon = "EMA20 > EMA50" if teknik["ema20"] > teknik["ema50"] else "EMA20 <= EMA50"
+                    ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
                     macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
+                    neden = " • ".join(a.get("nedenler", []))
                     mesaj += (
-                        f"H Teknik: {ema_yon} | RSI: {teknik['rsi']} | ADX: {teknik['adx']}\n"
-                        f"MACD Hist: {teknik['macd_hist']} ({macd_yon}) | ATR: %{teknik['atr_yuzde']}\n\n"
+                        f"{a.get('karar', '🟡 BEKLE')} | AI Skoru: {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
+                        f"EMA: {ema_yon} | RSI: {teknik['rsi']} | ADX: {teknik['adx']}\n"
+                        f"MACD: {macd_yon} | ATR: %{teknik['atr_yuzde']}\n"
+                        f"Neden: {neden}\n\n"
                     )
                 else:
-                    mesaj += "H Teknik: Veri yetersiz\n\n"
+                    mesaj += "🟡 BEKLE | Teknik veri yetersiz\n\n"
 
             print(mesaj)
             telegram_gonder(mesaj)
