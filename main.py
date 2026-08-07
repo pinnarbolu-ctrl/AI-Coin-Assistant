@@ -687,36 +687,68 @@ while True:
                     satis_baskisi, btc_fark3, zirve_yakin, yeni_zirve
                 )
 
-                # İlk aday seçimi: son çalışan Coin Radar eşiklerinin sadeleştirilmiş birleşimi.
-                # Amaç kategori üretmek değil; Humanity/AI analizine girecek güçlü ilk 10 havuzunu oluşturmak.
-                if hacim_kat < 5:
-                    continue
-                if degisim1 <= 0:
-                    continue
-                if degisim3 < 1.5:
-                    continue
-                if not btcden_guclu or btc_guc_skoru < 4:
-                    continue
-                if radar_skoru < 55:
+                # İlk aday seçimi = Coin Radar'ın GERÇEK Telegram alarm eşikleri.
+                # Arka plandaki İzleme / Güçlü Hacim coinleri AI Coin Assistant'a alınmaz.
+                yildiz_adayi = (
+                    radar_skoru >= 88
+                    and lider_skoru >= 7
+                    and btc_guc_skoru >= 7
+                    and kalite_skoru >= 14
+                    and hacim_kat >= 5
+                    and degisim1 > 1
+                    and degisim3 >= 4
+                    and zirve_yakin
+                )
+
+                elit_adayi = (
+                    radar_skoru >= 74
+                    and lider_skoru >= 5
+                    and btc_guc_skoru >= 5
+                    and kalite_skoru >= 10
+                    and hacim_kat >= 8
+                    and degisim1 > 0
+                    and degisim3 >= 3
+                    and btcden_guclu
+                )
+
+                trader_adayi = (
+                    radar_skoru >= 55
+                    and hacim_kat >= 15
+                    and btcden_guclu
+                    and btc_guc_skoru >= 4
+                    and degisim3 >= 6
+                )
+
+                roket_adayi = (
+                    radar_skoru >= 62
+                    and kalite_skoru >= 8
+                    and hacim_kat >= 5
+                    and degisim1 > 0
+                    and degisim3 >= 1.5
+                    and not (hacim_kat >= 10 and degisim3 < 4 and lider_skoru < 7)
+                    and btcden_guclu
+                    and btc_guc_skoru >= 4
+                    and (haber_skoru > 0 or lider_skoru >= 5)
+                )
+
+                if not (yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
                     continue
 
-                # Son Coin Radar bulgusu: 10x+ hacim, momentum/liderlik yoksa yanıltıcı olabiliyor.
-                if hacim_kat >= 10 and degisim3 < 4 and lider_skoru < 7:
-                    continue
-
-                # Roket/Elit hattında kalite; Trader hattında ise 15x+ hacim + 6%+ momentum teyidi.
-                trader_teyidi = hacim_kat >= 15 and degisim3 >= 6
-                if kalite_skoru < 8 and not trader_teyidi:
-                    continue
-
-                # Son çalışan Radar'daki gerçek alarm mantığını tek aday filtresinde birleştir.
-                if not (haber_skoru > 0 or lider_skoru >= 5 or trader_teyidi):
-                    continue
+                # Hangi Radar kapısından geçtiğini AI analizinde de sakla.
+                if yildiz_adayi:
+                    radar_kategori = "⭐ Yıldız"
+                elif elit_adayi:
+                    radar_kategori = "🔥 Elit Roket"
+                elif trader_adayi:
+                    radar_kategori = "📊 Trader Hacim"
+                else:
+                    radar_kategori = "🚀 Roket Adayı"
 
                 adaylar.append({
                     "symbol": symbol,
                     "fiyat": fiyat,
                     "radar_skoru": radar_skoru,
+                    "radar_kategori": radar_kategori,
                     "genel_skor": round(genel_skor, 2),
                     "kalite_skoru": round(kalite_skoru, 2),
                     "hacim": round(hacim_kat, 2),
@@ -793,7 +825,7 @@ while True:
                     neden = " • ".join(a.get("nedenler", []))
 
                     mesaj += (
-                        f"{a['symbol']}\n"
+                        f"{a['symbol']} | {a.get('radar_kategori', '')}\n"
                         f"{a.get('karar')} | AI Skoru: {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
                         f"Radar: {a['radar_skoru']}/100 | Fiyat: {round(a['fiyat'], 4)} | Hacim: {a['hacim']}x\n"
                         f"1s: %{a['degisim1']} | 3s: %{a['degisim3']} | 24s: %{a['degisim24']}\n"
