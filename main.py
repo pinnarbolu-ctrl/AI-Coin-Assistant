@@ -269,6 +269,137 @@ def haber_puani(symbol):
 
 
 
+# ==========================================
+# H MANTIĞI - TEKNİK ANALİZ KATMANI
+# Commit: EMA20/50 + RSI14 + MACD + ADX14 + ATR14
+# Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
+# ==========================================
+
+def ema_hesapla(veriler, periyot):
+    if len(veriler) < periyot:
+        return None
+    ema = sum(veriler[:periyot]) / periyot
+    k = 2 / (periyot + 1)
+    for fiyat in veriler[periyot:]:
+        ema = fiyat * k + ema * (1 - k)
+    return ema
+
+
+def ema_serisi(veriler, periyot):
+    if len(veriler) < periyot:
+        return []
+    sonuc = [None] * (periyot - 1)
+    ema = sum(veriler[:periyot]) / periyot
+    sonuc.append(ema)
+    k = 2 / (periyot + 1)
+    for fiyat in veriler[periyot:]:
+        ema = fiyat * k + ema * (1 - k)
+        sonuc.append(ema)
+    return sonuc
+
+
+def rsi_hesapla(kapanislar, periyot=14):
+    if len(kapanislar) < periyot + 1:
+        return None
+    farklar = [kapanislar[i] - kapanislar[i - 1] for i in range(1, len(kapanislar))]
+    kazanclar = [max(x, 0) for x in farklar]
+    kayiplar = [max(-x, 0) for x in farklar]
+    ort_kazanc = sum(kazanclar[:periyot]) / periyot
+    ort_kayip = sum(kayiplar[:periyot]) / periyot
+    for i in range(periyot, len(farklar)):
+        ort_kazanc = ((ort_kazanc * (periyot - 1)) + kazanclar[i]) / periyot
+        ort_kayip = ((ort_kayip * (periyot - 1)) + kayiplar[i]) / periyot
+    if ort_kayip == 0:
+        return 100.0
+    rs = ort_kazanc / ort_kayip
+    return 100 - (100 / (1 + rs))
+
+
+def macd_hesapla(kapanislar):
+    ema12 = ema_serisi(kapanislar, 12)
+    ema26 = ema_serisi(kapanislar, 26)
+    if not ema12 or not ema26:
+        return None, None, None
+    macd_seri = []
+    for i in range(len(kapanislar)):
+        if i < len(ema12) and i < len(ema26) and ema12[i] is not None and ema26[i] is not None:
+            macd_seri.append(ema12[i] - ema26[i])
+    if len(macd_seri) < 9:
+        return None, None, None
+    sinyal = ema_hesapla(macd_seri, 9)
+    macd = macd_seri[-1]
+    histogram = macd - sinyal if sinyal is not None else None
+    return macd, sinyal, histogram
+
+
+def atr_adx_hesapla(yuksekler, dusukler, kapanislar, periyot=14):
+    if len(kapanislar) < (periyot * 2) + 1:
+        return None, None
+    tr, arti_dm, eksi_dm = [], [], []
+    for i in range(1, len(kapanislar)):
+        yukari = yuksekler[i] - yuksekler[i - 1]
+        asagi = dusukler[i - 1] - dusukler[i]
+        arti_dm.append(yukari if yukari > asagi and yukari > 0 else 0)
+        eksi_dm.append(asagi if asagi > yukari and asagi > 0 else 0)
+        tr.append(max(
+            yuksekler[i] - dusukler[i],
+            abs(yuksekler[i] - kapanislar[i - 1]),
+            abs(dusukler[i] - kapanislar[i - 1])
+        ))
+
+    atr = sum(tr[:periyot]) / periyot
+    arti_s = sum(arti_dm[:periyot])
+    eksi_s = sum(eksi_dm[:periyot])
+    dxler = []
+
+    for i in range(periyot, len(tr)):
+        atr = ((atr * (periyot - 1)) + tr[i]) / periyot
+        arti_s = arti_s - (arti_s / periyot) + arti_dm[i]
+        eksi_s = eksi_s - (eksi_s / periyot) + eksi_dm[i]
+        arti_di = 100 * (arti_s / (atr * periyot)) if atr else 0
+        eksi_di = 100 * (eksi_s / (atr * periyot)) if atr else 0
+        toplam = arti_di + eksi_di
+        dxler.append(100 * abs(arti_di - eksi_di) / toplam if toplam else 0)
+
+    if len(dxler) < periyot:
+        return atr, None
+    adx = sum(dxler[:periyot]) / periyot
+    for dx in dxler[periyot:]:
+        adx = ((adx * (periyot - 1)) + dx) / periyot
+    return atr, adx
+
+
+def teknik_analiz_hesapla(symbol):
+    try:
+        d = veri_getir(symbol, 120)
+        c = d.get("c", [])
+        h = d.get("h", [])
+        l = d.get("l", [])
+        if len(c) < 55 or len(h) != len(c) or len(l) != len(c):
+            return None
+
+        ema20 = ema_hesapla(c, 20)
+        ema50 = ema_hesapla(c, 50)
+        rsi = rsi_hesapla(c, 14)
+        macd, macd_sinyal, macd_hist = macd_hesapla(c)
+        atr, adx = atr_adx_hesapla(h, l, c, 14)
+        fiyat = c[-1]
+        atr_yuzde = (atr / fiyat) * 100 if atr is not None and fiyat else None
+
+        return {
+            "ema20": round(ema20, 6) if ema20 is not None else None,
+            "ema50": round(ema50, 6) if ema50 is not None else None,
+            "rsi": round(rsi, 2) if rsi is not None else None,
+            "macd": round(macd, 6) if macd is not None else None,
+            "macd_sinyal": round(macd_sinyal, 6) if macd_sinyal is not None else None,
+            "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
+            "adx": round(adx, 2) if adx is not None else None,
+            "atr": round(atr, 6) if atr is not None else None,
+            "atr_yuzde": round(atr_yuzde, 2) if atr_yuzde is not None else None
+        }
+    except Exception as e:
+        print(f"Teknik analiz hata ({symbol}):", e)
+        return None
 
 
 while True:
@@ -463,6 +594,12 @@ while True:
         )
         top10 = adaylar[:10]
 
+        # H mantığı: Radar'ın seçtiği Top 10 üzerinde ikinci analiz katmanı.
+        # Bu committe göstergeler sadece hesaplanır; AL/BEKLE/SAT kararı sonraki committe verilecek.
+        for a in top10:
+            teknik = teknik_analiz_hesapla(a["symbol"])
+            a["teknik"] = teknik
+
         if not top10:
             print("Şu an uygun aday yok.")
         else:
@@ -478,8 +615,19 @@ while True:
                     f"Fiyat: {round(a['fiyat'], 4)} | Hacim: {a['hacim']}x\n"
                     f"1s: %{a['degisim1']} | 3s: %{a['degisim3']} | 24s: %{a['degisim24']}\n"
                     f"BTC fark 3s: %{a['btc_fark3']} {btc_isaret} | "
-                    f"Lider: {a['lider_skoru']}/10 | Haber: {a['haber_skoru']}\n\n"
+                    f"Lider: {a['lider_skoru']}/10 | Haber: {a['haber_skoru']}\n"
                 )
+
+                teknik = a.get("teknik")
+                if teknik:
+                    ema_yon = "EMA20 > EMA50" if teknik["ema20"] > teknik["ema50"] else "EMA20 <= EMA50"
+                    macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
+                    mesaj += (
+                        f"H Teknik: {ema_yon} | RSI: {teknik['rsi']} | ADX: {teknik['adx']}\n"
+                        f"MACD Hist: {teknik['macd_hist']} ({macd_yon}) | ATR: %{teknik['atr_yuzde']}\n\n"
+                    )
+                else:
+                    mesaj += "H Teknik: Veri yetersiz\n\n"
 
             print(mesaj)
             telegram_gonder(mesaj)
