@@ -14,7 +14,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 CHAT_IDS = [
     2097448038,
-    1877715122
 ]
 
 TARAMA_SURESI = 5 * 60
