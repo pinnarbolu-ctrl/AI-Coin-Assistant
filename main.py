@@ -18,6 +18,9 @@ CHAT_IDS = [
 
 TARAMA_SURESI = 5 * 60
 
+# Aynı kararın tekrar Telegram gönderimini engeller.
+son_ai_kararlar = {}
+
 
 
 
@@ -754,37 +757,53 @@ while True:
         if not top10:
             print("Şu an uygun aday yok.")
         else:
-            mesaj = (
-                "🤖 AI COIN ASSISTANT - ADAY LİSTESİ\n"
-                f"BTC 3s: %{round(btc, 2)}\n\n"
-            )
+            gonderilecekler = []
 
-            for sira, a in enumerate(top10, start=1):
-                btc_isaret = "✅" if a["btcden_guclu"] else "➖"
-                mesaj += (
-                    f"{sira}. {a['symbol']} | Radar: {a['radar_skoru']}/100\n"
-                    f"Fiyat: {round(a['fiyat'], 4)} | Hacim: {a['hacim']}x\n"
-                    f"1s: %{a['degisim1']} | 3s: %{a['degisim3']} | 24s: %{a['degisim24']}\n"
-                    f"BTC fark 3s: %{a['btc_fark3']} {btc_isaret} | "
-                    f"Lider: {a['lider_skoru']}/10 | Haber: {a['haber_skoru']}\n"
+            for a in top10:
+                symbol = a["symbol"]
+                karar = a.get("karar", "🟡 BEKLE")
+                onceki_karar = son_ai_kararlar.get(symbol)
+                son_ai_kararlar[symbol] = karar
+
+                # BEKLE mesajı gönderme.
+                if "BEKLE" in karar:
+                    continue
+
+                # Aynı AL veya SAT/PAS kararını tekrar gönderme.
+                if onceki_karar == karar:
+                    continue
+
+                gonderilecekler.append(a)
+
+            if not gonderilecekler:
+                print("Yeni AL / SAT kararı yok. Telegram sessiz.")
+            else:
+                mesaj = (
+                    "🤖 AI COIN ASSISTANT - KARAR GÜNCELLEMESİ\n"
+                    f"BTC 3s: %{round(btc, 2)}\n\n"
                 )
 
-                teknik = a.get("teknik")
-                if teknik:
+                for a in gonderilecekler:
+                    teknik = a.get("teknik")
+                    if not teknik:
+                        continue
+
                     ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
                     macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
                     neden = " • ".join(a.get("nedenler", []))
+
                     mesaj += (
-                        f"{a.get('karar', '🟡 BEKLE')} | AI Skoru: {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
+                        f"{a['symbol']}\n"
+                        f"{a.get('karar')} | AI Skoru: {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
+                        f"Radar: {a['radar_skoru']}/100 | Fiyat: {round(a['fiyat'], 4)} | Hacim: {a['hacim']}x\n"
+                        f"1s: %{a['degisim1']} | 3s: %{a['degisim3']} | 24s: %{a['degisim24']}\n"
                         f"EMA: {ema_yon} | RSI: {teknik['rsi']} | ADX: {teknik['adx']}\n"
                         f"MACD: {macd_yon} | ATR: %{teknik['atr_yuzde']}\n"
                         f"Neden: {neden}\n\n"
                     )
-                else:
-                    mesaj += "🟡 BEKLE | Teknik veri yetersiz\n\n"
 
-            print(mesaj)
-            telegram_gonder(mesaj)
+                print(mesaj)
+                telegram_gonder(mesaj)
 
         print("5 dk bekleniyor...")
         time.sleep(TARAMA_SURESI)
