@@ -274,7 +274,7 @@ def haber_puani(symbol):
 
 # ==========================================
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
-# Commit: EMA20/50 + RSI14 + MACD + ADX14 + ATR14 + AI Karar
+# Commit: AI Karar V2 - skor kalibrasyonu ve devam teyidi
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
 # ==========================================
 
@@ -411,6 +411,12 @@ def teknik_analiz_hesapla(symbol):
 # ==========================================
 
 def h_karar_hesapla(aday):
+    """
+    AI karar motoru V2.
+    Amaç: güçlü coin ile "şu anda alınabilir" coini ayırmak.
+    AVNT/ENA gibi zayıf devam teyitlerinde AL'ı zorlaştırır;
+    NAP/MIRA gibi güçlü trendleri ve H gibi istisnai Yıldız devamlarını korur.
+    """
     teknik = aday.get("teknik")
     if not teknik:
         return {
@@ -426,75 +432,102 @@ def h_karar_hesapla(aday):
     macd_hist = teknik.get("macd_hist")
     adx = teknik.get("adx")
     atr_yuzde = teknik.get("atr_yuzde")
+
     fiyat = aday.get("fiyat", 0)
     radar = aday.get("radar_skoru", 0)
+    kategori = aday.get("radar_kategori", "")
+    lider = aday.get("lider_skoru", 0)
+    deg1 = aday.get("degisim1", 0)
+    deg3 = aday.get("degisim3", 0)
+    deg24 = aday.get("degisim24", 0)
 
-    skor = 45.0
+    skor = 20.0
     nedenler = []
 
-    # Radar katmanı: ilk aday kalitesini ikinci aşamaya kontrollü biçimde taşır.
-    skor += max(0, min((radar - 55) * 0.40, 12))
+    # 1) Radar kalitesi: artık taban skoru şişirmiyor.
+    skor += max(0, min((radar - 55) * 0.50, 20))
 
-    # EMA trend yapısı
+    # Radar alarm seviyesine küçük kalite bonusu.
+    if "Yıldız" in kategori:
+        skor += 10
+        nedenler.append("Radar Yıldız")
+    elif "Elit" in kategori:
+        skor += 6
+    elif "Trader" in kategori:
+        skor += 4
+    elif "Roket" in kategori:
+        skor += 2
+
+    # 2) EMA: önemli ama tek başına veto değil.
     if ema20 is not None and ema50 is not None:
         if ema20 > ema50:
-            skor += 16
+            skor += 12
             nedenler.append("EMA trendi yukarı")
         else:
-            skor -= 16
+            skor -= 8
             nedenler.append("EMA trendi aşağı")
 
         if fiyat and ema20:
             if fiyat > ema20:
-                skor += 5
+                skor += 4
             else:
-                skor -= 7
-                nedenler.append("Fiyat EMA20 altında")
+                skor -= 5
 
-    # RSI: güçlü ama aşırı şişmemiş bölge tercih edilir.
+    # 3) RSI: 50-65 en temiz giriş bölgesi.
     if rsi is not None:
         if 50 <= rsi <= 65:
-            skor += 13
+            skor += 12
             nedenler.append("RSI sağlıklı güçlü bölgede")
         elif 45 <= rsi < 50:
-            skor += 6
-        elif 65 < rsi <= 72:
             skor += 5
+        elif 65 < rsi <= 72:
+            skor += 6
             nedenler.append("RSI güçlü ama ısınıyor")
-        elif rsi > 78:
-            skor -= 14
-            nedenler.append("RSI aşırı alım riski")
+        elif 72 < rsi <= 78:
+            skor += 1
+            nedenler.append("RSI yüksek")
+        elif 78 < rsi <= 85:
+            skor -= 7
+            nedenler.append("RSI aşırı alıma yakın")
+        elif rsi > 85:
+            skor -= 12
+            nedenler.append("RSI aşırı alım")
         elif rsi < 40:
             skor -= 10
             nedenler.append("RSI zayıf")
 
-    # MACD momentum teyidi
+    # 4) MACD: devam teyidi.
+    macd_pozitif = macd_hist is not None and macd_hist > 0
     if macd_hist is not None:
-        if macd_hist > 0:
-            skor += 14
+        if macd_pozitif:
+            skor += 12
             nedenler.append("MACD pozitif")
         else:
             skor -= 14
             nedenler.append("MACD negatif")
 
-    # ADX: trendin gerçekten güçlü olup olmadığını ölçer.
+    # 5) ADX: AL kararının ana ayırıcılarından biri.
     if adx is not None:
-        if adx >= 30:
-            skor += 11
+        if adx >= 40:
+            skor += 18
+            nedenler.append("Trend çok güçlü")
+        elif adx >= 30:
+            skor += 14
             nedenler.append("Trend çok güçlü")
         elif adx >= 25:
-            skor += 8
+            skor += 9
             nedenler.append("Trend güçlü")
         elif adx >= 20:
-            skor += 4
-        elif adx < 15:
-            skor -= 7
+            skor += 3
+            nedenler.append("Trend orta")
+        else:
+            skor -= 8
             nedenler.append("Trend gücü düşük")
 
-    # ATR: hareket fırsat yaratmalı ama aşırı riskli olmamalı.
+    # 6) ATR: sağlıklı hareketi ödüllendir, aşırı oynaklığı azalt.
     if atr_yuzde is not None:
         if 1 <= atr_yuzde <= 4.5:
-            skor += 4
+            skor += 5
         elif atr_yuzde > 7:
             skor -= 10
             nedenler.append("Volatilite çok yüksek")
@@ -502,33 +535,87 @@ def h_karar_hesapla(aday):
             skor -= 5
             nedenler.append("Volatilite yüksek")
 
-    # Radar'ın göreceli güç teyitlerinden küçük destek.
+    # 7) Göreceli güç ve liderlik.
     if aday.get("btcden_guclu"):
         skor += 4
-    if aday.get("lider_skoru", 0) >= 7:
-        skor += 4
-    elif aday.get("lider_skoru", 0) >= 5:
+
+    if lider >= 7:
+        skor += 5
+    elif lider >= 5:
         skor += 2
 
-    # Çok hızlı yükselmiş adaylarda geç giriş riskini azalt.
-    if aday.get("degisim1", 0) > 4:
-        skor -= 7
-        nedenler.append("1 saatlik hareket fazla hızlı")
-    if aday.get("degisim24", 0) > 15:
+    # 8) Momentum kalitesi.
+    # Çok yükselmiş olmak tek başına kötü değildir; devam gücü varsa H gibi hareketler korunur.
+    if 1 <= deg1 <= 4:
+        skor += 5
+    elif 4 < deg1 <= 8:
+        skor += 2
+    elif deg1 > 8:
+        skor -= 4
+
+    if 3 <= deg3 <= 8:
+        skor += 7
+    elif 8 < deg3 <= 15:
+        skor += 4
+    elif deg3 > 15:
+        skor += 1
+
+    if deg24 > 30:
         skor -= 5
-        nedenler.append("24 saatlik hareket yüksek")
+
+    # ADX düşükken 100/100 görünmesini engelle.
+    if adx is not None:
+        if adx < 20:
+            skor = min(skor, 74)
+        elif adx < 25:
+            skor = min(skor, 82)
+        elif adx < 30 and "Yıldız" not in kategori:
+            skor = min(skor, 90)
 
     skor = round(max(0, min(skor, 100)), 1)
 
-    # Karar eşikleri
-    if skor >= 75:
+    # --------------------------------------------------
+    # AL KAPISI
+    # Skor tek başına AL vermez; devam teyidi de gerekir.
+    # --------------------------------------------------
+    normal_guclu_trend = (
+        adx is not None
+        and adx >= 30
+        and macd_pozitif
+        and skor >= 80
+    )
+
+    elit_teyit = (
+        ("Elit" in kategori or "Yıldız" in kategori)
+        and radar >= 80
+        and adx is not None
+        and adx >= 25
+        and macd_pozitif
+        and skor >= 80
+    )
+
+    # H gibi çok güçlü Yıldız devamları:
+    # yüksek RSI / hızlı momentum otomatik veto değildir.
+    istisnai_devam = (
+        "Yıldız" in kategori
+        and radar >= 90
+        and lider >= 7
+        and aday.get("btcden_guclu")
+        and adx is not None
+        and adx >= 25
+        and macd_pozitif
+        and deg3 >= 8
+        and skor >= 78
+    )
+
+    if normal_guclu_trend or elit_teyit or istisnai_devam:
         karar = "🟢 AL"
     elif skor >= 55:
         karar = "🟡 BEKLE"
     else:
         karar = "🔴 SAT / PAS"
 
-    # Risk
+    # Risk sadece bilgilendirme; Telegram zaten yalnızca AL/SAT değişiminde konuşuyor.
     if atr_yuzde is None:
         risk = "Bilinmiyor"
     elif atr_yuzde <= 3:
@@ -843,4 +930,7 @@ while True:
     except Exception as e:
         print("Bot genel hata:", e)
         time.sleep(30)
+
+
+
 
