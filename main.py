@@ -277,7 +277,7 @@ def haber_puani(symbol):
 
 # ==========================================
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
-# Commit: AI AL V3 - Radar'dan bağımsız teknik teyit
+# Commit: AI AL V3.1 - Railway AL debug log
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
 # ==========================================
 
@@ -959,6 +959,72 @@ while True:
             karar = h_karar_hesapla(a)
             a.update(karar)
 
+            # --------------------------------------------------
+            # AL DEBUG LOG
+            # Telegram'a hiçbir şey göndermez.
+            # Railway logunda coin neden AL / BEKLE olduğunu gösterir.
+            # --------------------------------------------------
+            if teknik:
+                ema20 = teknik.get("ema20")
+                ema50 = teknik.get("ema50")
+                rsi = teknik.get("rsi")
+                macd_hist = teknik.get("macd_hist")
+                adx = teknik.get("adx")
+                fiyat = a.get("fiyat", 0)
+                kategori = a.get("radar_kategori", "")
+                ai_skor = a.get("ai_skoru", 0)
+
+                ema_ok = (
+                    ema20 is not None
+                    and ema50 is not None
+                    and fiyat
+                    and ema20 > ema50
+                    and fiyat > ema20
+                )
+                macd_ok = macd_hist is not None and macd_hist > 0
+
+                if a.get("erken_aday"):
+                    rsi_ok = rsi is not None and 48 <= rsi <= 70
+                    adx_ok = adx is not None and adx >= 30
+                    skor_ok = ai_skor >= 80
+                elif "Elit" in kategori:
+                    rsi_ok = rsi is not None and 45 <= rsi <= 75
+                    adx_ok = adx is not None and adx >= 28
+                    skor_ok = ai_skor >= 85
+                elif "Yıldız" in kategori:
+                    # Yıldızlarda normal teknik kapıyı göster.
+                    # H tipi istisnai devam varsa karar motoru ayrıca AL verebilir.
+                    rsi_ok = rsi is not None and 48 <= rsi <= 70
+                    adx_ok = adx is not None and adx >= 30
+                    skor_ok = ai_skor >= 85
+                else:
+                    rsi_ok = rsi is not None and 48 <= rsi <= 70
+                    adx_ok = adx is not None and adx >= 30
+                    skor_ok = ai_skor >= 85
+
+                def durum(ok):
+                    return "✅" if ok else "❌"
+
+                rsi_txt = "NA" if rsi is None else f"{rsi:.1f}"
+                adx_txt = "NA" if adx is None else f"{adx:.1f}"
+                macd_txt = "NA" if macd_hist is None else f"{macd_hist:.5f}"
+
+                print(
+                    f"[AL DEBUG] {a['symbol']} | {a.get('karar', '🟡 BEKLE')} | "
+                    f"{kategori} | "
+                    f"EMA {durum(ema_ok)} | "
+                    f"RSI {rsi_txt} {durum(rsi_ok)} | "
+                    f"MACD {macd_txt} {durum(macd_ok)} | "
+                    f"ADX {adx_txt} {durum(adx_ok)} | "
+                    f"AI {ai_skor}/100 {durum(skor_ok)} | "
+                    f"Radar {a.get('radar_skoru', 0)}"
+                )
+            else:
+                print(
+                    f"[AL DEBUG] {a['symbol']} | 🟡 BEKLE | "
+                    f"Teknik veri alınamadı"
+                )
+
         # İlk aday sıralamasını Radar yapar; H motorundan sonra en güçlü teknik fırsat üste çıkar.
         top10.sort(
             key=lambda x: (x.get("ai_skoru", 0), x.get("radar_skoru", 0)),
@@ -1034,4 +1100,3 @@ while True:
 
     except Exception as e:
         print("Bot genel hata:", e)
-        time.sleep(30)
