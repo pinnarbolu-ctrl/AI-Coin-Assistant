@@ -277,7 +277,7 @@ def haber_puani(symbol):
 
 # ==========================================
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
-# Commit: AI AL V3.1 - Railway AL debug log
+# Commit: AI AL V3.2 - Roket RSI ust siniri 75
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
 # ==========================================
 
@@ -589,7 +589,7 @@ def h_karar_hesapla(aday):
         and fiyat > ema20
     )
 
-    rsi_temiz = rsi is not None and 48 <= rsi <= 70
+    rsi_temiz = rsi is not None and 48 <= rsi <= 75
     rsi_kabul = rsi is not None and 45 <= rsi <= 75
 
     # Normal Radar adayında artık daha sıkı teknik teyit:
@@ -640,7 +640,8 @@ def h_karar_hesapla(aday):
     erken_al = (
         aday.get("erken_aday", False)
         and ema_yukari
-        and rsi_temiz
+        and rsi is not None
+        and 48 <= rsi <= 70
         and macd_pozitif
         and adx is not None
         and adx >= 30
@@ -998,7 +999,7 @@ while True:
                     adx_ok = adx is not None and adx >= 30
                     skor_ok = ai_skor >= 85
                 else:
-                    rsi_ok = rsi is not None and 48 <= rsi <= 70
+                    rsi_ok = rsi is not None and 48 <= rsi <= 75
                     adx_ok = adx is not None and adx >= 30
                     skor_ok = ai_skor >= 85
 
@@ -1100,3 +1101,4 @@ while True:
 
     except Exception as e:
         print("Bot genel hata:", e)
+        time.sleep(30)
