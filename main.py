@@ -277,7 +277,7 @@ def haber_puani(symbol):
 
 # ==========================================
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
-# Commit: AI AL V3.2 - Roket RSI ust siniri 75
+# Commit: AI AL V3.3 - Telegram sadece AL
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
 # ==========================================
 
@@ -1043,18 +1043,19 @@ while True:
                 onceki_karar = son_ai_kararlar.get(symbol)
                 son_ai_kararlar[symbol] = karar
 
-                # BEKLE mesajı gönderme.
-                if "BEKLE" in karar:
+                # Telegram sadece gerçek AL kararlarında konuşsun.
+                # BEKLE ve SAT/PAS kararları arka planda/loglarda kalır.
+                if "AL" not in karar:
                     continue
 
-                # Aynı AL veya SAT/PAS kararını tekrar gönderme.
+                # Aynı AL kararını tekrar gönderme.
                 if onceki_karar == karar:
                     continue
 
                 gonderilecekler.append(a)
 
             if not gonderilecekler:
-                print("Yeni AL / SAT kararı yok. Telegram sessiz.")
+                print("Yeni AL kararı yok. Telegram sessiz.")
             else:
                 mesaj = (
                     "🤖 AI COIN ASSISTANT - KARAR GÜNCELLEMESİ\n"
