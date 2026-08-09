@@ -641,11 +641,11 @@ def h_karar_hesapla(aday):
         aday.get("erken_aday", False)
         and ema_yukari
         and rsi is not None
-        and 48 <= rsi <= 70
+        and 48 <= rsi <= 75
         and macd_pozitif
         and adx is not None
         and adx >= 30
-        and skor >= 80
+        and skor >= 75
     )
 
     if normal_al or elit_al or yildiz_istisna or erken_al:
@@ -985,9 +985,9 @@ while True:
                 macd_ok = macd_hist is not None and macd_hist > 0
 
                 if a.get("erken_aday"):
-                    rsi_ok = rsi is not None and 48 <= rsi <= 70
+                    rsi_ok = rsi is not None and 48 <= rsi <= 75
                     adx_ok = adx is not None and adx >= 30
-                    skor_ok = ai_skor >= 80
+                    skor_ok = ai_skor >= 75
                 elif "Elit" in kategori:
                     rsi_ok = rsi is not None and 45 <= rsi <= 75
                     adx_ok = adx is not None and adx >= 28
