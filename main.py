@@ -9,6 +9,8 @@ import time
 import requests
 import feedparser
 
+HTTP_SESSION = requests.Session()
+
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -66,7 +68,7 @@ def telegram_gonder(mesaj):
 
     for chat_id in CHAT_IDS:
         try:
-            r = requests.get(
+            r = HTTP_SESSION.get(
                 url,
                 params={"chat_id": chat_id, "text": mesaj},
                 timeout=10
@@ -76,13 +78,29 @@ def telegram_gonder(mesaj):
             print(chat_id, e)
 
 
-def veri_getir(symbol, saat=24):
+def veri_getir(symbol, saat=24, tekrar=2):
+    """
+    BTCTurk graph-api veri çağrısı.
+    Aynı bağlantı havuzunu kullanır; geçici timeoutlarda kısa retry yapar.
+    """
     simdi = int(time.time())
     url = (
         f"https://graph-api.btcturk.com/v1/klines/history?"
         f"symbol={symbol}&resolution=60&from={simdi - (saat * 3600)}&to={simdi}"
     )
-    return requests.get(url, timeout=10).json()
+
+    son_hata = None
+    for deneme in range(tekrar + 1):
+        try:
+            r = HTTP_SESSION.get(url, timeout=(5, 12))
+            r.raise_for_status()
+            return r.json()
+        except requests.RequestException as e:
+            son_hata = e
+            if deneme < tekrar:
+                time.sleep(0.8 * (deneme + 1))
+            else:
+                raise son_hata
 
 
 
@@ -279,7 +297,7 @@ def haber_puani(symbol):
 
 # ==========================================
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
-# Commit: Entry Quality V1 + Erken Sinyal = eski Erken Aday mantığı
+# Commit: API Cleanup V1 - cache + retry + connection reuse
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
 # ==========================================
 
@@ -788,7 +806,7 @@ while True:
         btc_d = btc_degisimleri()
         btc = btc_d.get("3s", 0)
 
-        ticker_response = requests.get(
+        ticker_response = HTTP_SESSION.get(
             "https://api.btcturk.com/api/v2/ticker",
             timeout=10
         )
@@ -797,6 +815,14 @@ while True:
 
         adaylar = []
         erken_sinyaller = []
+
+        # Aynı coin için aynı turda 120 saatlik teknik veriyi tekrar tekrar çekmeyelim.
+        teknik_cache = {}
+
+        def teknik_getir_cache(symbol):
+            if symbol not in teknik_cache:
+                teknik_cache[symbol] = teknik_analiz_hesapla(symbol)
+            return teknik_cache[symbol]
 
         for coin in ticker:
             try:
@@ -973,7 +999,7 @@ while True:
                 if erken_sinyal:
                     son_erken = erken_sinyal_gonderilenler.get(symbol, 0)
                     if time.time() - son_erken >= ERKEN_SINYAL_TEKRAR_SURESI:
-                        teknik_erken = teknik_analiz_hesapla(symbol)
+                        teknik_erken = teknik_getir_cache(symbol)
 
                         if teknik_erken:
                             ema20_e = teknik_erken.get("ema20")
@@ -1103,7 +1129,7 @@ while True:
 
         # H mantığı: Radar'ın seçtiği Top 10 üzerinde teknik analiz + karar motoru.
         for a in top10:
-            teknik = teknik_analiz_hesapla(a["symbol"])
+            teknik = teknik_getir_cache(a["symbol"])
             a["teknik"] = teknik
             karar = h_karar_hesapla(a)
             a.update(karar)
