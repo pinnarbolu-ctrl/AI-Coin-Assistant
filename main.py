@@ -1,6 +1,6 @@
 # ==========================================
 # AI COIN ASSISTANT
-# Final Cleanup / Core Candidate Scanner
+# Final Cleanup / Core Candidate Scanner - Early Candidate Removed
 # Candidate thresholds synced with latest working Coin Radar
 # ==========================================
 
@@ -17,9 +17,6 @@ CHAT_IDS = [
 ]
 
 TARAMA_SURESI = 5 * 60
-
-# Early Capture V1: önceki taramadaki hızlanmayı ölçmek için hafıza.
-onceki_tarama = {}
 
 # Aynı kararın tekrar Telegram gönderimini engeller.
 son_ai_kararlar = {}
@@ -595,8 +592,7 @@ def h_karar_hesapla(aday):
     # Normal Radar adayında artık daha sıkı teknik teyit:
     # EMA yukarı + sağlıklı RSI + güçlü ADX + pozitif MACD + yüksek AI skoru.
     normal_al = (
-        not aday.get("erken_aday", False)
-        and ema_yukari
+        ema_yukari
         and rsi_temiz
         and macd_pozitif
         and adx is not None
@@ -634,21 +630,7 @@ def h_karar_hesapla(aday):
         and skor >= 85
     )
 
-    # Early Capture ayrı tutulur:
-    # erken yakalamanın amacı daha düşük Radar skorunda teknik güçlenmeyi yakalamak.
-    # Bu yüzden Radar yüksekliği değil, temiz teknik yapı aranır.
-    erken_al = (
-        aday.get("erken_aday", False)
-        and ema_yukari
-        and rsi is not None
-        and 48 <= rsi <= 75
-        and macd_pozitif
-        and adx is not None
-        and adx >= 30
-        and skor >= 75
-    )
-
-    if normal_al or elit_al or yildiz_istisna or erken_al:
+    if normal_al or elit_al or yildiz_istisna:
         karar = "🟢 AL"
     elif skor >= 55:
         karar = "🟡 BEKLE"
@@ -815,54 +797,8 @@ while True:
                 )
 
                 # --------------------------------------------------
-                # Early Capture V1 + gerçek Coin Radar alarm kapıları
+                # Gerçek Coin Radar alarm kapıları
                 # --------------------------------------------------
-                onceki = onceki_tarama.get(symbol)
-
-                hacim_hizlaniyor = False
-                momentum_hizlaniyor = False
-                btc_farki_aciliyor = False
-                lider_gucleniyor = False
-
-                if onceki:
-                    eski_hacim = onceki.get("hacim", hacim_kat)
-                    eski_degisim3 = onceki.get("degisim3", degisim3)
-                    eski_btc_fark3 = onceki.get("btc_fark3", btc_fark3)
-                    eski_lider = onceki.get("lider_skoru", lider_skoru)
-
-                    hacim_hizlaniyor = (
-                        eski_hacim > 0
-                        and hacim_kat >= eski_hacim * 1.25
-                        and hacim_kat - eski_hacim >= 0.8
-                    )
-                    momentum_hizlaniyor = degisim3 - eski_degisim3 >= 0.45
-                    btc_farki_aciliyor = btc_fark3 - eski_btc_fark3 >= 0.35
-                    lider_gucleniyor = lider_skoru - eski_lider >= 1
-
-                onceki_tarama[symbol] = {
-                    "hacim": hacim_kat,
-                    "degisim3": degisim3,
-                    "btc_fark3": btc_fark3,
-                    "lider_skoru": lider_skoru,
-                    "zaman": time.time()
-                }
-
-                erken_aday = (
-                    2.5 <= hacim_kat < 8
-                    and 0.5 <= degisim3 < 3
-                    and degisim1 > 0
-                    and btc_guc_skoru >= 3
-                    and btc_fark3 >= 0
-                    and radar_skoru >= 45
-                    and kalite_skoru >= 6
-                    and not satis_baskisi
-                    and (
-                        (hacim_hizlaniyor and momentum_hizlaniyor)
-                        or (momentum_hizlaniyor and btc_farki_aciliyor)
-                        or (hacim_hizlaniyor and lider_gucleniyor)
-                    )
-                )
-
                 yildiz_adayi = (
                     radar_skoru >= 88
                     and lider_skoru >= 7
@@ -905,7 +841,7 @@ while True:
                     and (haber_skoru > 0 or lider_skoru >= 5)
                 )
 
-                if not (erken_aday or yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
+                if not (yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
                     continue
 
                 if yildiz_adayi:
@@ -916,19 +852,12 @@ while True:
                     radar_kategori = "📊 Trader Hacim"
                 elif roket_adayi:
                     radar_kategori = "🚀 Roket Adayı"
-                else:
-                    radar_kategori = "🌱 Erken Aday"
 
                 adaylar.append({
                     "symbol": symbol,
                     "fiyat": fiyat,
                     "radar_skoru": radar_skoru,
                     "radar_kategori": radar_kategori,
-                    "erken_aday": erken_aday,
-                    "hacim_hizlaniyor": hacim_hizlaniyor,
-                    "momentum_hizlaniyor": momentum_hizlaniyor,
-                    "btc_farki_aciliyor": btc_farki_aciliyor,
-                    "lider_gucleniyor": lider_gucleniyor,
                     "genel_skor": round(genel_skor, 2),
                     "kalite_skoru": round(kalite_skoru, 2),
                     "hacim": round(hacim_kat, 2),
@@ -984,11 +913,7 @@ while True:
                 )
                 macd_ok = macd_hist is not None and macd_hist > 0
 
-                if a.get("erken_aday"):
-                    rsi_ok = rsi is not None and 48 <= rsi <= 75
-                    adx_ok = adx is not None and adx >= 30
-                    skor_ok = ai_skor >= 75
-                elif "Elit" in kategori:
+                if "Elit" in kategori:
                     rsi_ok = rsi is not None and 45 <= rsi <= 75
                     adx_ok = adx is not None and adx >= 28
                     skor_ok = ai_skor >= 85
@@ -1070,18 +995,6 @@ while True:
                     ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
                     macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
                     nedenler = list(a.get("nedenler", []))
-                    if a.get("erken_aday"):
-                        hizlar = []
-                        if a.get("hacim_hizlaniyor"):
-                            hizlar.append("hacim hızlanıyor")
-                        if a.get("momentum_hizlaniyor"):
-                            hizlar.append("momentum hızlanıyor")
-                        if a.get("btc_farki_aciliyor"):
-                            hizlar.append("BTC farkı açılıyor")
-                        if a.get("lider_gucleniyor"):
-                            hizlar.append("lider güçleniyor")
-                        if hizlar:
-                            nedenler.insert(0, "Erken yakalama: " + ", ".join(hizlar))
                     neden = " • ".join(nedenler[:5])
 
                     mesaj += (
