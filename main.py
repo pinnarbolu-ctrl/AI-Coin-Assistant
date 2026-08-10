@@ -279,7 +279,7 @@ def haber_puani(symbol):
 
 # ==========================================
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
-# Commit: Entry Quality V1 + tek satırlık Erken Sinyal
+# Commit: Entry Quality V1 + Erken Sinyal = eski Erken Aday mantığı
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
 # ==========================================
 
@@ -974,18 +974,34 @@ while True:
                     son_erken = erken_sinyal_gonderilenler.get(symbol, 0)
                     if time.time() - son_erken >= ERKEN_SINYAL_TEKRAR_SURESI:
                         teknik_erken = teknik_analiz_hesapla(symbol)
-                        rsi_erken = teknik_erken.get("rsi") if teknik_erken else None
 
-                        # Erken Sinyal teknik AL değildir; yalnızca önceden haber verir.
-                        # Aşırı şişmiş RSI'da "erken" dememek için 75 üstünü sustur.
-                        if rsi_erken is None or rsi_erken <= 75:
-                            erken_sinyaller.append({
-                                "symbol": symbol,
-                                "fiyat": fiyat,
-                                "rsi": rsi_erken,
-                                "hacim": hacim_kat
-                            })
-                            erken_sinyal_gonderilenler[symbol] = time.time()
+                        if teknik_erken:
+                            ema20_e = teknik_erken.get("ema20")
+                            ema50_e = teknik_erken.get("ema50")
+                            rsi_e = teknik_erken.get("rsi")
+                            macd_hist_e = teknik_erken.get("macd_hist")
+                            adx_e = teknik_erken.get("adx")
+
+                            ema_ok_e = (
+                                ema20_e is not None
+                                and ema50_e is not None
+                                and fiyat > ema20_e
+                                and ema20_e > ema50_e
+                            )
+                            rsi_ok_e = rsi_e is not None and 48 <= rsi_e <= 75
+                            macd_ok_e = macd_hist_e is not None and macd_hist_e > 0
+                            adx_ok_e = adx_e is not None and adx_e >= 30
+
+                            # Eski Erken Aday mantığıyla aynı teknik kalite kapısı:
+                            # hızlanma + EMA + RSI + MACD + ADX.
+                            if ema_ok_e and rsi_ok_e and macd_ok_e and adx_ok_e:
+                                erken_sinyaller.append({
+                                    "symbol": symbol,
+                                    "fiyat": fiyat,
+                                    "rsi": rsi_e,
+                                    "hacim": hacim_kat
+                                })
+                                erken_sinyal_gonderilenler[symbol] = time.time()
 
                 # --------------------------------------------------
                 # Gerçek Coin Radar alarm kapıları
