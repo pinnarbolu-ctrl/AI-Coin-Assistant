@@ -1,6 +1,6 @@
 # ==========================================
 # AI COIN ASSISTANT
-# Core Candidate Scanner + One-Line Early Signal
+# Final Cleanup / Core Candidate Scanner
 # Candidate thresholds synced with latest working Coin Radar
 # ==========================================
 
@@ -8,8 +8,6 @@ import os
 import time
 import requests
 import feedparser
-
-HTTP_SESSION = requests.Session()
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -20,10 +18,8 @@ CHAT_IDS = [
 
 TARAMA_SURESI = 5 * 60
 
-# Tek satırlık Erken Sinyal için önceki tarama hafızası ve tekrar engeli.
+# Early Capture V1: önceki taramadaki hızlanmayı ölçmek için hafıza.
 onceki_tarama = {}
-erken_sinyal_gonderilenler = {}
-ERKEN_SINYAL_TEKRAR_SURESI = 6 * 60 * 60
 
 # Aynı kararın tekrar Telegram gönderimini engeller.
 son_ai_kararlar = {}
@@ -68,7 +64,7 @@ def telegram_gonder(mesaj):
 
     for chat_id in CHAT_IDS:
         try:
-            r = HTTP_SESSION.get(
+            r = requests.get(
                 url,
                 params={"chat_id": chat_id, "text": mesaj},
                 timeout=10
@@ -78,29 +74,13 @@ def telegram_gonder(mesaj):
             print(chat_id, e)
 
 
-def veri_getir(symbol, saat=24, tekrar=2):
-    """
-    BTCTurk graph-api veri çağrısı.
-    Aynı bağlantı havuzunu kullanır; geçici timeoutlarda kısa retry yapar.
-    """
+def veri_getir(symbol, saat=24):
     simdi = int(time.time())
     url = (
         f"https://graph-api.btcturk.com/v1/klines/history?"
         f"symbol={symbol}&resolution=60&from={simdi - (saat * 3600)}&to={simdi}"
     )
-
-    son_hata = None
-    for deneme in range(tekrar + 1):
-        try:
-            r = HTTP_SESSION.get(url, timeout=(5, 12))
-            r.raise_for_status()
-            return r.json()
-        except requests.RequestException as e:
-            son_hata = e
-            if deneme < tekrar:
-                time.sleep(0.8 * (deneme + 1))
-            else:
-                raise son_hata
+    return requests.get(url, timeout=10).json()
 
 
 
@@ -297,7 +277,7 @@ def haber_puani(symbol):
 
 # ==========================================
 # H MANTIĞI - TEKNİK ANALİZ KATMANI
-# Commit: API Cleanup V1 - cache + retry + connection reuse
+# Commit: AI AL V3.2 - Roket RSI ust siniri 75
 # Bu katman aday seçimini değiştirmez; Top 10 adayı analiz için zenginleştirir.
 # ==========================================
 
@@ -412,11 +392,6 @@ def teknik_analiz_hesapla(symbol):
         fiyat = c[-1]
         atr_yuzde = (atr / fiyat) * 100 if atr is not None and fiyat else None
 
-        son_yuksek = h[-1] if h else None
-        son_dusuk = l[-1] if l else None
-        son_acilis = d.get("o", [])[-1] if d.get("o", []) else None
-        onceki_12_yuksek = max(h[-13:-1]) if len(h) >= 13 else None
-
         return {
             "ema20": round(ema20, 6) if ema20 is not None else None,
             "ema50": round(ema50, 6) if ema50 is not None else None,
@@ -426,11 +401,7 @@ def teknik_analiz_hesapla(symbol):
             "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
             "adx": round(adx, 2) if adx is not None else None,
             "atr": round(atr, 6) if atr is not None else None,
-            "atr_yuzde": round(atr_yuzde, 2) if atr_yuzde is not None else None,
-            "son_yuksek": round(son_yuksek, 6) if son_yuksek is not None else None,
-            "son_dusuk": round(son_dusuk, 6) if son_dusuk is not None else None,
-            "son_acilis": round(son_acilis, 6) if son_acilis is not None else None,
-            "onceki_12_yuksek": round(onceki_12_yuksek, 6) if onceki_12_yuksek is not None else None
+            "atr_yuzde": round(atr_yuzde, 2) if atr_yuzde is not None else None
         }
     except Exception as e:
         print(f"Teknik analiz hata ({symbol}):", e)
@@ -441,113 +412,6 @@ def teknik_analiz_hesapla(symbol):
 # H MANTIĞI - KARAR MOTORU
 # Radar ilk adayları bulur; bu katman teknik yapıyı AL / BEKLE / SAT-PAS kararına çevirir.
 # ==========================================
-
-
-def entry_quality_hesapla(aday):
-    """
-    Entry Quality V1.
-    Teknik olarak güçlü fakat kısa vadede fazla uzamış / tepeye yakın girişleri sessizce eler.
-    Telegram'a ayrı mesaj üretmez; yalnızca AL kararına son kapı olur.
-    """
-    teknik = aday.get("teknik") or {}
-
-    fiyat = aday.get("fiyat", 0) or 0
-    ema20 = teknik.get("ema20")
-    rsi = teknik.get("rsi")
-    atr = teknik.get("atr")
-    atr_yuzde = teknik.get("atr_yuzde")
-    son_yuksek = teknik.get("son_yuksek")
-    son_dusuk = teknik.get("son_dusuk")
-    son_acilis = teknik.get("son_acilis")
-    onceki_12_yuksek = teknik.get("onceki_12_yuksek")
-
-    deg1 = aday.get("degisim1", 0) or 0
-    deg3 = aday.get("degisim3", 0) or 0
-    hacim = aday.get("hacim", 0) or 0
-    adx = teknik.get("adx")
-    macd_hist = teknik.get("macd_hist")
-
-    puan = 100.0
-    nedenler = []
-
-    # EMA20'den ATR bazlı uzaklık: trend güçlü olsa bile çok uzamış fiyatı kovalamayı azalt.
-    ema_atr_uzaklik = None
-    if fiyat and ema20 and atr and atr > 0:
-        ema_atr_uzaklik = (fiyat - ema20) / atr
-        if ema_atr_uzaklik > 2.4:
-            puan -= 28
-            nedenler.append("EMA20'den çok uzak")
-        elif ema_atr_uzaklik > 1.8:
-            puan -= 16
-            nedenler.append("EMA20'den uzak")
-        elif ema_atr_uzaklik > 1.3:
-            puan -= 7
-
-    # Kısa momentum + yüksek RSI birlikteyse kovalamayı cezalandır.
-    if rsi is not None:
-        if rsi > 74 and deg3 >= 5:
-            puan -= 14
-            nedenler.append("RSI yüksek + 3s uzamış")
-        elif rsi > 72 and deg1 >= 3.5 and deg3 >= 4.5:
-            puan -= 10
-            nedenler.append("Kısa momentum fazla ısınmış")
-
-    # Son mum tepesinden geri çekilmiş / üst fitilli ise kötü giriş.
-    ust_fitil_orani = None
-    if None not in (son_yuksek, son_dusuk, son_acilis) and son_yuksek > son_dusuk:
-        govde_tepe = max(son_acilis, fiyat)
-        ust_fitil = max(son_yuksek - govde_tepe, 0)
-        mum_aralik = son_yuksek - son_dusuk
-        ust_fitil_orani = ust_fitil / mum_aralik if mum_aralik > 0 else 0
-
-        if ust_fitil_orani >= 0.45:
-            puan -= 18
-            nedenler.append("Büyük üst fitil")
-        elif ust_fitil_orani >= 0.30:
-            puan -= 9
-            nedenler.append("Üst fitil belirgin")
-
-    # Yerel zirveye çok yakın + zaten ısınmışsa ek ceza.
-    zirve_mesafe = None
-    if fiyat and onceki_12_yuksek and onceki_12_yuksek > 0:
-        zirve_mesafe = ((onceki_12_yuksek - fiyat) / fiyat) * 100
-
-        if zirve_mesafe <= 0.35 and rsi is not None and rsi >= 72 and deg3 >= 4:
-            puan -= 12
-            nedenler.append("Yerel zirve kovalanıyor")
-
-    # Sağlıklı breakout istisnası:
-    # yüksek hacim + güçlü ADX + pozitif MACD + mum tepeye yakın kapanış varsa bazı cezaları geri al.
-    tepeye_yakin_kapanis = False
-    if None not in (son_yuksek, son_dusuk) and son_yuksek > son_dusuk:
-        tepeye_yakin_kapanis = ((son_yuksek - fiyat) / (son_yuksek - son_dusuk)) <= 0.20
-
-    saglikli_breakout = (
-        hacim >= 6
-        and adx is not None and adx >= 35
-        and macd_hist is not None and macd_hist > 0
-        and tepeye_yakin_kapanis
-    )
-
-    if saglikli_breakout:
-        puan += 12
-        nedenler.append("Sağlıklı breakout teyidi")
-
-    puan = round(max(0, min(puan, 100)), 1)
-
-    # İlk sürüm konservatif: kötü girişleri eler, iyi AL'ları mümkün olduğunca korur.
-    uygun = puan >= 72
-
-    return {
-        "entry_skoru": puan,
-        "entry_uygun": uygun,
-        "entry_nedenler": nedenler[:4],
-        "ema_atr_uzaklik": round(ema_atr_uzaklik, 2) if ema_atr_uzaklik is not None else None,
-        "ust_fitil_orani": round(ust_fitil_orani, 2) if ust_fitil_orani is not None else None,
-        "zirve_mesafe": round(zirve_mesafe, 2) if zirve_mesafe is not None else None,
-        "saglikli_breakout": saglikli_breakout
-    }
-
 
 def h_karar_hesapla(aday):
     """
@@ -731,7 +595,8 @@ def h_karar_hesapla(aday):
     # Normal Radar adayında artık daha sıkı teknik teyit:
     # EMA yukarı + sağlıklı RSI + güçlü ADX + pozitif MACD + yüksek AI skoru.
     normal_al = (
-        ema_yukari
+        not aday.get("erken_aday", False)
+        and ema_yukari
         and rsi_temiz
         and macd_pozitif
         and adx is not None
@@ -769,7 +634,21 @@ def h_karar_hesapla(aday):
         and skor >= 85
     )
 
-    if normal_al or elit_al or yildiz_istisna:
+    # Early Capture ayrı tutulur:
+    # erken yakalamanın amacı daha düşük Radar skorunda teknik güçlenmeyi yakalamak.
+    # Bu yüzden Radar yüksekliği değil, temiz teknik yapı aranır.
+    erken_al = (
+        aday.get("erken_aday", False)
+        and ema_yukari
+        and rsi is not None
+        and 48 <= rsi <= 70
+        and macd_pozitif
+        and adx is not None
+        and adx >= 30
+        and skor >= 80
+    )
+
+    if normal_al or elit_al or yildiz_istisna or erken_al:
         karar = "🟢 AL"
     elif skor >= 55:
         karar = "🟡 BEKLE"
@@ -806,7 +685,7 @@ while True:
         btc_d = btc_degisimleri()
         btc = btc_d.get("3s", 0)
 
-        ticker_response = HTTP_SESSION.get(
+        ticker_response = requests.get(
             "https://api.btcturk.com/api/v2/ticker",
             timeout=10
         )
@@ -814,15 +693,6 @@ while True:
         ticker = ticker_response.json().get("data", [])
 
         adaylar = []
-        erken_sinyaller = []
-
-        # Aynı coin için aynı turda 120 saatlik teknik veriyi tekrar tekrar çekmeyelim.
-        teknik_cache = {}
-
-        def teknik_getir_cache(symbol):
-            if symbol not in teknik_cache:
-                teknik_cache[symbol] = teknik_analiz_hesapla(symbol)
-            return teknik_cache[symbol]
 
         for coin in ticker:
             try:
@@ -945,9 +815,7 @@ while True:
                 )
 
                 # --------------------------------------------------
-                # TEK SATIRLIK ERKEN SİNYAL
-                # AL değildir; sadece hareketin normal Radar alarmından önce
-                # hızlanmaya başladığını haber verir.
+                # Early Capture V1 + gerçek Coin Radar alarm kapıları
                 # --------------------------------------------------
                 onceki = onceki_tarama.get(symbol)
 
@@ -979,9 +847,8 @@ while True:
                     "zaman": time.time()
                 }
 
-                erken_sinyal = (
-                    onceki is not None
-                    and 2.5 <= hacim_kat < 8
+                erken_aday = (
+                    2.5 <= hacim_kat < 8
                     and 0.5 <= degisim3 < 3
                     and degisim1 > 0
                     and btc_guc_skoru >= 3
@@ -996,42 +863,6 @@ while True:
                     )
                 )
 
-                if erken_sinyal:
-                    son_erken = erken_sinyal_gonderilenler.get(symbol, 0)
-                    if time.time() - son_erken >= ERKEN_SINYAL_TEKRAR_SURESI:
-                        teknik_erken = teknik_getir_cache(symbol)
-
-                        if teknik_erken:
-                            ema20_e = teknik_erken.get("ema20")
-                            ema50_e = teknik_erken.get("ema50")
-                            rsi_e = teknik_erken.get("rsi")
-                            macd_hist_e = teknik_erken.get("macd_hist")
-                            adx_e = teknik_erken.get("adx")
-
-                            ema_ok_e = (
-                                ema20_e is not None
-                                and ema50_e is not None
-                                and fiyat > ema20_e
-                                and ema20_e > ema50_e
-                            )
-                            rsi_ok_e = rsi_e is not None and 48 <= rsi_e <= 75
-                            macd_ok_e = macd_hist_e is not None and macd_hist_e > 0
-                            adx_ok_e = adx_e is not None and adx_e >= 30
-
-                            # Eski Erken Aday mantığıyla aynı teknik kalite kapısı:
-                            # hızlanma + EMA + RSI + MACD + ADX.
-                            if ema_ok_e and rsi_ok_e and macd_ok_e and adx_ok_e:
-                                erken_sinyaller.append({
-                                    "symbol": symbol,
-                                    "fiyat": fiyat,
-                                    "rsi": rsi_e,
-                                    "hacim": hacim_kat
-                                })
-                                erken_sinyal_gonderilenler[symbol] = time.time()
-
-                # --------------------------------------------------
-                # Gerçek Coin Radar alarm kapıları
-                # --------------------------------------------------
                 yildiz_adayi = (
                     radar_skoru >= 88
                     and lider_skoru >= 7
@@ -1074,7 +905,7 @@ while True:
                     and (haber_skoru > 0 or lider_skoru >= 5)
                 )
 
-                if not (yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
+                if not (erken_aday or yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
                     continue
 
                 if yildiz_adayi:
@@ -1085,12 +916,19 @@ while True:
                     radar_kategori = "📊 Trader Hacim"
                 elif roket_adayi:
                     radar_kategori = "🚀 Roket Adayı"
+                else:
+                    radar_kategori = "🌱 Erken Aday"
 
                 adaylar.append({
                     "symbol": symbol,
                     "fiyat": fiyat,
                     "radar_skoru": radar_skoru,
                     "radar_kategori": radar_kategori,
+                    "erken_aday": erken_aday,
+                    "hacim_hizlaniyor": hacim_hizlaniyor,
+                    "momentum_hizlaniyor": momentum_hizlaniyor,
+                    "btc_farki_aciliyor": btc_farki_aciliyor,
+                    "lider_gucleniyor": lider_gucleniyor,
                     "genel_skor": round(genel_skor, 2),
                     "kalite_skoru": round(kalite_skoru, 2),
                     "hacim": round(hacim_kat, 2),
@@ -1109,18 +947,6 @@ while True:
             except Exception as e:
                 print(f"Coin hata ({coin.get('pair', '?')}):", e)
 
-        # Erken Sinyal sadece tek satırdır; AL/BEKLE/AI skoru içermez.
-        for e in erken_sinyaller:
-            rsi_text = "NA" if e["rsi"] is None else round(e["rsi"], 1)
-            erken_mesaj = (
-                f"🌱 ERKEN SİNYAL | {e['symbol']} | "
-                f"Fiyat: {round(e['fiyat'], 4)} | "
-                f"RSI: {rsi_text} | "
-                f"Hacim: {round(e['hacim'], 2)}x"
-            )
-            telegram_gonder(erken_mesaj)
-            print(erken_mesaj)
-
         adaylar.sort(
             key=lambda x: (x["radar_skoru"], x["genel_skor"]),
             reverse=True
@@ -1129,17 +955,10 @@ while True:
 
         # H mantığı: Radar'ın seçtiği Top 10 üzerinde teknik analiz + karar motoru.
         for a in top10:
-            teknik = teknik_getir_cache(a["symbol"])
+            teknik = teknik_analiz_hesapla(a["symbol"])
             a["teknik"] = teknik
             karar = h_karar_hesapla(a)
             a.update(karar)
-
-            entry = entry_quality_hesapla(a)
-            a.update(entry)
-
-            # Teknik motor AL dese bile giriş kalitesi zayıfsa Telegram'a AL gönderme.
-            if "AL" in a.get("karar", "") and not a.get("entry_uygun", False):
-                a["karar"] = "🟡 BEKLE"
 
             # --------------------------------------------------
             # AL DEBUG LOG
@@ -1165,7 +984,11 @@ while True:
                 )
                 macd_ok = macd_hist is not None and macd_hist > 0
 
-                if "Elit" in kategori:
+                if a.get("erken_aday"):
+                    rsi_ok = rsi is not None and 48 <= rsi <= 70
+                    adx_ok = adx is not None and adx >= 30
+                    skor_ok = ai_skor >= 80
+                elif "Elit" in kategori:
                     rsi_ok = rsi is not None and 45 <= rsi <= 75
                     adx_ok = adx is not None and adx >= 28
                     skor_ok = ai_skor >= 85
@@ -1195,7 +1018,6 @@ while True:
                     f"MACD {macd_txt} {durum(macd_ok)} | "
                     f"ADX {adx_txt} {durum(adx_ok)} | "
                     f"AI {ai_skor}/100 {durum(skor_ok)} | "
-                    f"Entry {a.get('entry_skoru', 0)}/100 {durum(a.get('entry_uygun', False))} | "
                     f"Radar {a.get('radar_skoru', 0)}"
                 )
             else:
@@ -1221,19 +1043,18 @@ while True:
                 onceki_karar = son_ai_kararlar.get(symbol)
                 son_ai_kararlar[symbol] = karar
 
-                # Telegram sadece gerçek AL kararlarında konuşsun.
-                # BEKLE ve SAT/PAS kararları arka planda/loglarda kalır.
-                if "AL" not in karar:
+                # BEKLE mesajı gönderme.
+                if "BEKLE" in karar:
                     continue
 
-                # Aynı AL kararını tekrar gönderme.
+                # Aynı AL veya SAT/PAS kararını tekrar gönderme.
                 if onceki_karar == karar:
                     continue
 
                 gonderilecekler.append(a)
 
             if not gonderilecekler:
-                print("Yeni AL kararı yok. Telegram sessiz.")
+                print("Yeni AL / SAT kararı yok. Telegram sessiz.")
             else:
                 mesaj = (
                     "🤖 AI COIN ASSISTANT - KARAR GÜNCELLEMESİ\n"
@@ -1248,6 +1069,18 @@ while True:
                     ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
                     macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
                     nedenler = list(a.get("nedenler", []))
+                    if a.get("erken_aday"):
+                        hizlar = []
+                        if a.get("hacim_hizlaniyor"):
+                            hizlar.append("hacim hızlanıyor")
+                        if a.get("momentum_hizlaniyor"):
+                            hizlar.append("momentum hızlanıyor")
+                        if a.get("btc_farki_aciliyor"):
+                            hizlar.append("BTC farkı açılıyor")
+                        if a.get("lider_gucleniyor"):
+                            hizlar.append("lider güçleniyor")
+                        if hizlar:
+                            nedenler.insert(0, "Erken yakalama: " + ", ".join(hizlar))
                     neden = " • ".join(nedenler[:5])
 
                     mesaj += (
