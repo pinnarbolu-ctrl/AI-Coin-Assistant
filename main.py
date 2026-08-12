@@ -1,5 +1,7 @@
 # ==========================================
 # AI COIN ASSISTANT
+# Fast Scan V1: 60 sn hızlı ön tarama + 5 dk tam tarama
+# AL Relax V1: normal AL için ADX 27 / AI 80
 # Final Cleanup / Core Candidate Scanner
 # Candidate thresholds synced with latest working Coin Radar
 # ==========================================
@@ -16,7 +18,11 @@ CHAT_IDS = [
     2097448038,
 ]
 
-TARAMA_SURESI = 5 * 60
+TARAMA_SURESI = 60
+TAM_TARAMA_DONGUSU = 5          # 5 x 60 sn = yaklaşık 5 dk
+HIZLI_HAREKET_ESIGI = 0.40      # 1 dakikalık fiyat değişimi %0.40+ ise hemen derin analiz
+son_fiyatlar = {}
+tarama_sayaci = 0
 
 # Early Capture V1: önceki taramadaki hızlanmayı ölçmek için hafıza.
 onceki_tarama = {}
@@ -600,8 +606,8 @@ def h_karar_hesapla(aday):
         and rsi_temiz
         and macd_pozitif
         and adx is not None
-        and adx >= 30
-        and skor >= 85
+        and adx >= 27
+        and skor >= 80
     )
 
     # Çok güçlü Elit sinyalde RSI biraz daha geniş olabilir,
@@ -685,6 +691,14 @@ while True:
         btc_d = btc_degisimleri()
         btc = btc_d.get("3s", 0)
 
+        tarama_sayaci += 1
+        tam_tarama = (tarama_sayaci == 1 or tarama_sayaci % TAM_TARAMA_DONGUSU == 0)
+
+        if tam_tarama:
+            print("Tarama modu: TAM PIYASA TARAMASI")
+        else:
+            print("Tarama modu: HIZLI HAREKET TARAMASI")
+
         ticker_response = requests.get(
             "https://api.btcturk.com/api/v2/ticker",
             timeout=10
@@ -706,6 +720,30 @@ while True:
                     continue
                 if len(symbol) > 15:
                     continue
+
+                # 1 dakikalık hızlı ön tarama:
+                # Ticker fiyatını önceki dakikayla karşılaştır.
+                try:
+                    ticker_fiyat = float(coin.get("last", 0) or 0)
+                except (TypeError, ValueError):
+                    ticker_fiyat = 0
+
+                onceki_fiyat = son_fiyatlar.get(symbol)
+                hizli_degisim = 0.0
+
+                if ticker_fiyat > 0 and onceki_fiyat and onceki_fiyat > 0:
+                    hizli_degisim = ((ticker_fiyat - onceki_fiyat) / onceki_fiyat) * 100
+
+                if ticker_fiyat > 0:
+                    son_fiyatlar[symbol] = ticker_fiyat
+
+                # 5 dakikalık tam taramalar arasında yalnızca hızlı hareket eden
+                # coinlerde mevcut ağır Radar + teknik analiz mantığını çalıştır.
+                if not tam_tarama and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI:
+                    continue
+
+                if not tam_tarama:
+                    print(f"[HIZLI] {symbol} | 1dk: %{hizli_degisim:.2f}")
 
                 d = veri_getir(symbol, 24)
                 o = d.get("o", [])
@@ -1000,8 +1038,8 @@ while True:
                     skor_ok = ai_skor >= 85
                 else:
                     rsi_ok = rsi is not None and 48 <= rsi <= 75
-                    adx_ok = adx is not None and adx >= 30
-                    skor_ok = ai_skor >= 85
+                    adx_ok = adx is not None and adx >= 27
+                    skor_ok = ai_skor >= 80
 
                 def durum(ok):
                     return "✅" if ok else "❌"
@@ -1096,7 +1134,7 @@ while True:
                 print(mesaj)
                 telegram_gonder(mesaj)
 
-        print("5 dk bekleniyor...")
+        print("60 sn bekleniyor...")
         time.sleep(TARAMA_SURESI)
 
     except Exception as e:
