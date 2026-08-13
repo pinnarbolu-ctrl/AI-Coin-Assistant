@@ -661,7 +661,7 @@ def h_karar_hesapla(aday):
     else:
         karar = "🔴 SAT / PAS"
 
-    # Risk sadece bilgilendirme; Telegram zaten yalnızca AL/SAT değişiminde konuşuyor.
+    # Risk sadece bilgilendirme; Telegram yalnızca AL kararında konuşuyor.
     if atr_yuzde is None:
         risk = "Bilinmiyor"
     elif atr_yuzde <= 3:
@@ -1081,18 +1081,19 @@ while True:
                 onceki_karar = son_ai_kararlar.get(symbol)
                 son_ai_kararlar[symbol] = karar
 
-                # BEKLE mesajı gönderme.
-                if "BEKLE" in karar:
+                # Telegram yalnızca gerçek AL kararlarında konuşur.
+                # BEKLE ve SAT/PAS arka planda/loglarda izlenmeye devam eder.
+                if "🟢 AL" not in karar:
                     continue
 
-                # Aynı AL veya SAT/PAS kararını tekrar gönderme.
+                # Aynı AL kararını tekrar gönderme.
                 if onceki_karar == karar:
                     continue
 
                 gonderilecekler.append(a)
 
             if not gonderilecekler:
-                print("Yeni AL / SAT kararı yok. Telegram sessiz.")
+                print("Yeni AL kararı yok. Telegram sessiz.")
             else:
                 mesaj = (
                     "🤖 AI COIN ASSISTANT - KARAR GÜNCELLEMESİ\n"
