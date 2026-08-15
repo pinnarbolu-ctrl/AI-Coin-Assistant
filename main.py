@@ -782,7 +782,7 @@ def h_karar_hesapla(aday):
 while True:
     try:
         print()
-        print("AI COIN ASSISTANT - CORE | V5.4.7 1s→3s erken Roket")
+        print("AI COIN ASSISTANT - CORE")
         print("--------------------------------")
 
         btc_d = btc_degisimleri()
@@ -1020,22 +1020,7 @@ while True:
                     and degisim3 >= 6
                 )
 
-                # V5.4.7: 24s'e bakmadan 1s→3s hazırlığını erken yakala.
-                # Coinin iki saat hazırlanıp üçüncü saate doğru hızlandığı profili hedefler.
-                erken_roket_hazirligi = (
-                    radar_skoru >= 55
-                    and kalite_skoru >= 8
-                    and hacim_kat >= 3.5
-                    and 0.30 <= degisim1 <= 2.75
-                    and 0.80 <= degisim3 <= 4.0
-                    and (degisim3 - degisim1) >= 0.40
-                    and btcden_guclu
-                    and btc_guc_skoru >= 4
-                    and (haber_skoru > 0 or lider_skoru >= 5)
-                )
-
-                # Eski alıştığımız Roket Adayı kapısı aynen korunuyor.
-                eski_roket_adayi = (
+                roket_adayi = (
                     radar_skoru >= 62
                     and kalite_skoru >= 8
                     and hacim_kat >= 5
@@ -1046,8 +1031,6 @@ while True:
                     and btc_guc_skoru >= 4
                     and (haber_skoru > 0 or lider_skoru >= 5)
                 )
-
-                roket_adayi = erken_roket_hazirligi or eski_roket_adayi
 
                 if not (yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
                     continue
@@ -1066,7 +1049,6 @@ while True:
                     "fiyat": fiyat,
                     "radar_skoru": radar_skoru,
                     "radar_kategori": radar_kategori,
-                    "erken_roket_hazirligi": bool(erken_roket_hazirligi),
                     "genel_skor": round(genel_skor, 2),
                     "kalite_skoru": round(kalite_skoru, 2),
                     "hacim": round(hacim_kat, 2),
@@ -1224,8 +1206,6 @@ while True:
                     ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
                     macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
                     nedenler = list(a.get("nedenler", []))
-                    if a.get("erken_roket_hazirligi"):
-                        nedenler.insert(0, "1s→3s hazırlık güçleniyor")
                     neden = " • ".join(nedenler[:5])
 
                     mesaj += (
