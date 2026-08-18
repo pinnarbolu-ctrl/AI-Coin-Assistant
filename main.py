@@ -1108,8 +1108,10 @@ while True:
                     ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
                     macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
                     nedenler = list(a.get("nedenler", []))
+                    hizlar = []
+                    teknik_neden_sayisi = len(nedenler)
+
                     if a.get("erken_aday"):
-                        hizlar = []
                         if a.get("hacim_hizlaniyor"):
                             hizlar.append("hacim hızlanıyor")
                         if a.get("momentum_hizlaniyor"):
@@ -1120,6 +1122,11 @@ while True:
                             hizlar.append("lider güçleniyor")
                         if hizlar:
                             nedenler.insert(0, "Erken yakalama: " + ", ".join(hizlar))
+
+                    # Mesajın içeriğini/AL kriterlerini değiştirmez.
+                    # Toplam gerçek olumlu neden 6 veya fazlaysa yalnızca "Neden:" başına alarm ekler.
+                    toplam_neden_sayisi = teknik_neden_sayisi + len(hizlar)
+                    neden_alarm = "🚨 🚨 " if toplam_neden_sayisi >= 6 else ""
                     neden = " • ".join(nedenler[:5])
 
                     mesaj += (
@@ -1129,7 +1136,7 @@ while True:
                         f"1s: %{a['degisim1']} | 3s: %{a['degisim3']} | 24s: %{a['degisim24']}\n"
                         f"EMA: {ema_yon} | RSI: {teknik['rsi']} | ADX: {teknik['adx']}\n"
                         f"MACD: {macd_yon} | ATR: %{teknik['atr_yuzde']}\n"
-                        f"Neden: {neden}\n\n"
+                        f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
                 print(mesaj)
