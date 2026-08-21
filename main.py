@@ -27,6 +27,11 @@ tarama_sayaci = 0
 # Early Capture V1: önceki taramadaki hızlanmayı ölçmek için hafıza.
 onceki_tarama = {}
 
+# Çoklu Güç Havuzu:
+# Güçlenme işareti veren coin 5 dakika boyunca, 1 dk fiyat hareketi %0.40 altında kalsa bile izlenir.
+guc_izleme_havuzu = {}
+GUC_IZLEME_SURESI = 5 * 60
+
 # Aynı kararın tekrar Telegram gönderimini engeller.
 son_ai_kararlar = {}
 
@@ -737,13 +742,23 @@ while True:
                 if ticker_fiyat > 0:
                     son_fiyatlar[symbol] = ticker_fiyat
 
-                # 5 dakikalık tam taramalar arasında yalnızca hızlı hareket eden
-                # coinlerde mevcut ağır Radar + teknik analiz mantığını çalıştır.
-                if not tam_tarama and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI:
+                # 5 dakikalık tam taramalar arasında:
+                # - %0.40+ hızlı hareket eden coinler,
+                # - veya Çoklu Güç Havuzu'nda bulunan coinler
+                # derin analiz edilir.
+                simdi = time.time()
+                izleme_bitis = guc_izleme_havuzu.get(symbol, 0)
+                havuzda = izleme_bitis > simdi
+
+                if izleme_bitis and not havuzda:
+                    guc_izleme_havuzu.pop(symbol, None)
+
+                if not tam_tarama and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI and not havuzda:
                     continue
 
                 if not tam_tarama:
-                    print(f"[HIZLI] {symbol} | 1dk: %{hizli_degisim:.2f}")
+                    kaynak = "HAVUZ" if havuzda and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI else "HIZLI"
+                    print(f"[{kaynak}] {symbol} | 1dk: %{hizli_degisim:.2f}")
 
                 d = veri_getir(symbol, 24)
                 o = d.get("o", [])
@@ -885,9 +900,20 @@ while True:
                     "zaman": time.time()
                 }
 
+                # Dinamik hareket teyitleri:
+                # Bunlar RED/ATM tipi "nedenleri dolu" sinyallerin hareket tarafını oluşturur.
+                dinamik_teyit_sayisi = sum([
+                    bool(hacim_hizlaniyor),
+                    bool(momentum_hizlaniyor),
+                    bool(btc_farki_aciliyor),
+                    bool(lider_gucleniyor),
+                ])
+
+                # Mevcut Early yolu korunuyor; sadece 3s üst sınırı 3'ten 5'e açıldı.
+                # Böylece güçlenmeye devam eden coin Early ile Roket arasında boşluğa düşmez.
                 erken_aday = (
                     2.5 <= hacim_kat < 8
-                    and 0.5 <= degisim3 < 3
+                    and 0.5 <= degisim3 < 5
                     and degisim1 > 0
                     and btc_guc_skoru >= 3
                     and btc_fark3 >= 0
@@ -900,6 +926,47 @@ while True:
                         or (hacim_hizlaniyor and lider_gucleniyor)
                     )
                 )
+
+                # ENA tipi basamaklı güçlenme:
+                # Bir anda %0.40 sıçramasa bile 3s momentumunu koruyan,
+                # hacmi canlı, BTC'ye göre zayıflamayan ve liderliği oluşan coinleri izler.
+                basamakli_trend = False
+                if onceki:
+                    eski_degisim3 = onceki.get("degisim3", degisim3)
+                    eski_hacim = onceki.get("hacim", hacim_kat)
+                    basamakli_trend = (
+                        1.0 <= degisim3 <= 10
+                        and degisim1 > 0
+                        and hacim_kat >= 1.8
+                        and hacim_kat >= eski_hacim * 0.90
+                        and degisim3 >= eski_degisim3 - 0.15
+                        and btc_fark3 >= 0
+                        and lider_skoru >= 4
+                        and not satis_baskisi
+                    )
+
+                # Çoklu Güç Havuzu adayı:
+                # Radar kategorisine girmese bile en az 2 dinamik teyidi olan
+                # veya basamaklı trendi koruyan coin teknik motora alınır.
+                guc_havuzu_adayi = (
+                    not satis_baskisi
+                    and radar_skoru >= 40
+                    and kalite_skoru >= 5
+                    and 0.5 <= degisim3 <= 10
+                    and degisim1 > -0.5
+                    and hacim_kat >= 1.8
+                    and btc_fark3 >= -0.5
+                    and (
+                        (
+                            dinamik_teyit_sayisi >= 2
+                            and (hacim_hizlaniyor or momentum_hizlaniyor)
+                        )
+                        or basamakli_trend
+                    )
+                )
+
+                if erken_aday or guc_havuzu_adayi:
+                    guc_izleme_havuzu[symbol] = time.time() + GUC_IZLEME_SURESI
 
                 yildiz_adayi = (
                     radar_skoru >= 88
@@ -943,7 +1010,7 @@ while True:
                     and (haber_skoru > 0 or lider_skoru >= 5)
                 )
 
-                if not (erken_aday or yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
+                if not (erken_aday or guc_havuzu_adayi or yildiz_adayi or elit_adayi or trader_adayi or roket_adayi):
                     continue
 
                 if yildiz_adayi:
@@ -954,8 +1021,10 @@ while True:
                     radar_kategori = "📊 Trader Hacim"
                 elif roket_adayi:
                     radar_kategori = "🚀 Roket Adayı"
-                else:
+                elif erken_aday:
                     radar_kategori = "🌱 Erken Aday"
+                else:
+                    radar_kategori = "⚡ Güçleniyor"
 
                 adaylar.append({
                     "symbol": symbol,
@@ -963,6 +1032,9 @@ while True:
                     "radar_skoru": radar_skoru,
                     "radar_kategori": radar_kategori,
                     "erken_aday": erken_aday,
+                    "guc_havuzu_adayi": guc_havuzu_adayi,
+                    "basamakli_trend": basamakli_trend,
+                    "dinamik_teyit_sayisi": dinamik_teyit_sayisi,
                     "hacim_hizlaniyor": hacim_hizlaniyor,
                     "momentum_hizlaniyor": momentum_hizlaniyor,
                     "btc_farki_aciliyor": btc_farki_aciliyor,
@@ -989,9 +1061,37 @@ while True:
             key=lambda x: (x["radar_skoru"], x["genel_skor"]),
             reverse=True
         )
-        top10 = adaylar[:10]
 
-        # H mantığı: Radar'ın seçtiği Top 10 üzerinde teknik analiz + karar motoru.
+        radar_top10 = adaylar[:10]
+
+        # Radar Top10 dışında, hareket teyidi yüksek coinleri de teknik motora sok.
+        guc_top10 = sorted(
+            [a for a in adaylar if a.get("guc_havuzu_adayi")],
+            key=lambda x: (
+                x.get("dinamik_teyit_sayisi", 0),
+                1 if x.get("basamakli_trend") else 0,
+                x.get("genel_skor", 0),
+                x.get("radar_skoru", 0),
+            ),
+            reverse=True
+        )[:10]
+
+        # Aynı coin iki listede varsa tek kez analiz edilir.
+        top10 = []
+        gorulenler = set()
+        for aday in radar_top10 + guc_top10:
+            symbol = aday.get("symbol")
+            if symbol in gorulenler:
+                continue
+            gorulenler.add(symbol)
+            top10.append(aday)
+
+        print(
+            f"Teknik havuz: RadarTop10={len(radar_top10)} | "
+            f"ÇokluGüç={len(guc_top10)} | Benzersiz={len(top10)}"
+        )
+
+        # H mantığı: Radar Top10 + Çoklu Güç Havuzu üzerinde teknik analiz + karar motoru.
         for a in top10:
             teknik = teknik_analiz_hesapla(a["symbol"])
             a["teknik"] = teknik
@@ -1108,18 +1208,27 @@ while True:
                     ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
                     macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
                     nedenler = list(a.get("nedenler", []))
-                    if a.get("erken_aday"):
-                        hizlar = []
-                        if a.get("hacim_hizlaniyor"):
-                            hizlar.append("hacim hızlanıyor")
-                        if a.get("momentum_hizlaniyor"):
-                            hizlar.append("momentum hızlanıyor")
-                        if a.get("btc_farki_aciliyor"):
-                            hizlar.append("BTC farkı açılıyor")
-                        if a.get("lider_gucleniyor"):
-                            hizlar.append("lider güçleniyor")
-                        if hizlar:
-                            nedenler.insert(0, "Erken yakalama: " + ", ".join(hizlar))
+                    hizlar = []
+
+                    if a.get("hacim_hizlaniyor"):
+                        hizlar.append("hacim hızlanıyor")
+                    if a.get("momentum_hizlaniyor"):
+                        hizlar.append("momentum hızlanıyor")
+                    if a.get("btc_farki_aciliyor"):
+                        hizlar.append("BTC farkı açılıyor")
+                    if a.get("lider_gucleniyor"):
+                        hizlar.append("lider güçleniyor")
+                    if a.get("basamakli_trend"):
+                        hizlar.append("basamaklı trend korunuyor")
+
+                    if hizlar:
+                        baslik = "Erken yakalama" if a.get("erken_aday") else "Hareket teyidi"
+                        nedenler.insert(0, baslik + ": " + ", ".join(hizlar))
+
+                    # 6+ gerçek olumlu neden varsa yalnızca Neden başına alarm koy.
+                    # AL kararı veya filtrelerde hiçbir etkisi yok.
+                    toplam_neden_sayisi = len(a.get("nedenler", [])) + len(hizlar)
+                    neden_alarm = "🚨 🚨 " if toplam_neden_sayisi >= 6 else ""
                     neden = " • ".join(nedenler[:5])
 
                     mesaj += (
@@ -1129,7 +1238,7 @@ while True:
                         f"1s: %{a['degisim1']} | 3s: %{a['degisim3']} | 24s: %{a['degisim24']}\n"
                         f"EMA: {ema_yon} | RSI: {teknik['rsi']} | ADX: {teknik['adx']}\n"
                         f"MACD: {macd_yon} | ATR: %{teknik['atr_yuzde']}\n"
-                        f"Neden: {neden}\n\n"
+                        f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
                 print(mesaj)
