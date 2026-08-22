@@ -1006,13 +1006,10 @@ while True:
                     and btc_fark3 >= -0.5
                     and (
                         (
-                            dinamik_teyit_sayisi >= 3
+                            dinamik_teyit_sayisi >= 2
                             and (hacim_hizlaniyor or momentum_hizlaniyor)
                         )
-                        or (
-                            basamakli_trend
-                            and dinamik_teyit_sayisi >= 1
-                        )
+                        or basamakli_trend
                     )
                 )
 
@@ -1125,7 +1122,7 @@ while True:
                 x.get("radar_skoru", 0),
             ),
             reverse=True
-        )[:6]
+        )[:10]
 
         # Aynı coin iki listede varsa tek kez analiz edilir.
         top10 = []
@@ -1276,10 +1273,10 @@ while True:
                         baslik = "Erken yakalama" if a.get("erken_aday") else "Hareket teyidi"
                         nedenler.insert(0, baslik + ": " + ", ".join(hizlar))
 
-                    # 7+ gerçek olumlu neden varsa yalnızca Neden başına alarm koy.
+                    # 6+ gerçek olumlu neden varsa yalnızca Neden başına alarm koy.
                     # AL kararı veya filtrelerde hiçbir etkisi yok.
                     toplam_neden_sayisi = len(a.get("nedenler", [])) + len(hizlar)
-                    neden_alarm = "🚨 🚨 " if toplam_neden_sayisi >= 7 else ""
+                    neden_alarm = "🚨 🚨 " if toplam_neden_sayisi >= 6 else ""
                     neden = " • ".join(nedenler[:5])
 
                     mesaj += (
