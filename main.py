@@ -659,55 +659,7 @@ def h_karar_hesapla(aday):
         and skor >= 80
     )
 
-    # --------------------------------------------------
-    # GEÇ GİRİŞ KONTROLÜ V1
-    # Sadece "Çoklu Güç / Güçleniyor" yolundan gelen coinlerde çalışır.
-    # RED gibi erken yakalamaları etkilemez.
-    #
-    # Tek bir göstergeyle AL kesilmez. Aşağıdaki 5 geç-kalma işaretinden
-    # en az 3'ü aynı anda varsa giriş artık fazla ilerlemiş kabul edilir:
-    #   - RSI >= 70
-    #   - 1s hareket >= %3
-    #   - 3s hareket >= %4
-    #   - fiyat EMA20'den >= 1.5 ATR uzak
-    #   - fiyat son zirveye çok yakın
-    # --------------------------------------------------
-    ema20_uzaklik_yuzde = None
-    ema20_atr_uzaklik = None
-
-    if ema20 is not None and ema20 > 0 and fiyat:
-        ema20_uzaklik_yuzde = ((fiyat - ema20) / ema20) * 100
-
-        if atr_yuzde is not None and atr_yuzde > 0:
-            ema20_atr_uzaklik = ema20_uzaklik_yuzde / atr_yuzde
-
-    gec_giris_isaretleri = 0
-
-    if rsi is not None and rsi >= 70:
-        gec_giris_isaretleri += 1
-
-    if deg1 >= 3:
-        gec_giris_isaretleri += 1
-
-    if deg3 >= 4:
-        gec_giris_isaretleri += 1
-
-    if ema20_atr_uzaklik is not None and ema20_atr_uzaklik >= 1.5:
-        gec_giris_isaretleri += 1
-
-    if aday.get("zirve_yakin", False):
-        gec_giris_isaretleri += 1
-
-    gec_giris = (
-        aday.get("guc_havuzu_adayi", False)
-        and not aday.get("erken_aday", False)
-        and gec_giris_isaretleri >= 3
-    )
-
-    if gec_giris:
-        nedenler.append("Giriş geç: hareket fazla ilerlemiş")
-
-    if (normal_al or elit_al or yildiz_istisna or erken_al) and not gec_giris:
+    if normal_al or elit_al or yildiz_istisna or erken_al:
         karar = "🟢 AL"
     elif skor >= 55:
         karar = "🟡 BEKLE"
