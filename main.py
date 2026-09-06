@@ -1195,10 +1195,7 @@ while True:
             if not gonderilecekler:
                 print("Yeni AL kararı yok. Telegram sessiz.")
             else:
-                mesaj = (
-                    "🤖 AI COIN ASSISTANT - KARAR GÜNCELLEMESİ\n"
-                    f"BTC 3s: %{round(btc, 2)}\n\n"
-                )
+                mesaj = ""
 
                 for a in gonderilecekler:
                     teknik = a.get("teknik")
@@ -1231,13 +1228,14 @@ while True:
                     neden_alarm = "🚨 🚨 " if toplam_neden_sayisi >= 6 else ""
                     neden = " • ".join(nedenler[:5])
 
+                    gorunen_coin = a["symbol"][:-3] if a["symbol"].endswith("TRY") else a["symbol"]
                     mesaj += (
-                        f"{a['symbol']} | {a.get('radar_kategori', '')}\n"
-                        f"{a.get('karar')} | AI Skoru: {a.get('ai_skoru', 0)}/100 | Risk: {a.get('risk', 'Bilinmiyor')}\n"
-                        f"Radar: {a['radar_skoru']}/100 | Fiyat: {round(a['fiyat'], 4)} | Hacim: {a['hacim']}x\n"
-                        f"1s: %{a['degisim1']} | 3s: %{a['degisim3']} | 24s: %{a['degisim24']}\n"
-                        f"EMA: {ema_yon} | RSI: {teknik['rsi']} | ADX: {teknik['adx']}\n"
-                        f"MACD: {macd_yon} | ATR: %{teknik['atr_yuzde']}\n"
+                        f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
+                        f"AI {a.get('ai_skoru', 0)} | Risk {a.get('risk', 'Bilinmiyor')}\n\n"
+                        f"Radar {a['radar_skoru']}/100 | Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x\n"
+                        f"BTC 3s %{round(btc, 2)} | 1s %{a['degisim1']} | 3s %{a['degisim3']} | 24s %{a['degisim24']}\n\n"
+                        f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']}\n"
+                        f"MACD {macd_yon} | ATR %{teknik['atr_yuzde']}\n\n"
                         f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
