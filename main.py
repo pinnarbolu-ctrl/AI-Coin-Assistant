@@ -1,5 +1,5 @@
 # ==========================================
-# AI COIN ASSISTANT - V6 | ERKEN PUAN + ASSISTANT ANA AL + %4 KAR
+# MAIN 30 | MIKRO ON ALARM + DINAMIK CIKIS SKORU
 # Taban: main (21).py
 # 21 sadeligi + 13 AL/SAT/Kar Koru + 1-3-5-10 dk erken yakalama
 # Giris/Devam skorları sadece bilgi, AL için veto DEGIL
@@ -19,12 +19,16 @@ import statistics
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-CHAT_IDS = [1877715122, 2097448038]
+CHAT_IDS = [2097448038]
 
 TARAMA_SURESI = 60
 TAM_TARAMA_DONGUSU = 5          # 5 x 60 sn = yaklaşık 5 dk
 HIZLI_HAREKET_ESIGI = 0.40      # 1 dakikalık fiyat değişimi %0.40+ ise hemen derin analiz
 son_fiyatlar = {}
+# Fast Scan V2: her coin icin son birkac ticker fiyatini API cagrisi yapmadan hafizada tut.
+# Boylece tek dakikada %0.40 sicramayan ama 3-5 dakikada basamakli hizlanan hareketler de gorulur.
+son_ticker_gecmisi = {}
+TICKER_GECMIS_UZUNLUK = 6
 tarama_sayaci = 0
 SON_PIYASA_MEDYAN_60 = 0.0  # Son tam taramadaki TRY coinleri 60dk medyanı
 
@@ -48,10 +52,10 @@ AL_TAKIP = {}
 POZISYON_TAKIP_SURESI = 15
 KAR_BILDIR_ESIK = 5.0
 KAR_KORU_BASLANGIC = 7.0
-KAR_KORU_GERI_CEKILME = 1.8
-TRAILING_10 = 3.0
-TRAILING_15 = 2.5
-TRAILING_20 = 2.0
+# Dinamik çıkış motoru: sabit trailing yerine Devam + Yorgunluk + Zirve Dönüşü.
+CIKIS_MIKRO_YENILEME = 60
+CIKIS_KORU_SKORU = 55
+CIKIS_SAT_SKORU = 75
 
 # AL Rejim / Seçicilik Öğrenmesi
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
@@ -325,6 +329,7 @@ def al_takip_baslat(aday):
     if mevcut and mevcut.get("aktif"):
         return
 
+    teknik = aday.get("teknik") or {}
     AL_TAKIP[symbol] = {
         "aktif": True,
         "giris": fiyat,
@@ -333,25 +338,106 @@ def al_takip_baslat(aday):
         "kar_bildirildi": False,
         "kar_koru_bildirildi": False,
         "sat_bildirildi": False,
+        "son_mikro_zamani": 0.0,
+        "son_mikro": aday.get("mikro") or {},
+        "devam_gucu": float(aday.get("devam_gucu", 0) or 0),
+        "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
+        "ai_skoru": float(aday.get("ai_skoru", 0) or 0),
+        "adx": teknik.get("adx"),
+        "rsi": teknik.get("rsi"),
+        "macd_hist": teknik.get("macd_hist"),
+        "max_devam": float(aday.get("devam_gucu", 0) or 0),
     }
 
 
-def _trailing_esigi(max_getiri):
-    """Kâr büyüdükçe izin verilen tepe geri çekilmesini daraltır."""
-    if max_getiri >= 20.0:
-        return TRAILING_20
-    if max_getiri >= 15.0:
-        return TRAILING_15
-    if max_getiri >= 10.0:
-        return TRAILING_10
-    return None
+def al_takip_teknik_guncelle(aday):
+    """Aktif AL yeniden teknik taramaya girerse çıkış motoruna canlı teknik durumu taşır."""
+    symbol = aday.get("symbol")
+    p = AL_TAKIP.get(symbol)
+    if not p or not p.get("aktif"):
+        return
+    teknik = aday.get("teknik") or {}
+    p["devam_gucu"] = float(aday.get("devam_gucu", p.get("devam_gucu", 0)) or 0)
+    p["kalicilik"] = float(aday.get("kalicilik_skoru", p.get("kalicilik", 0)) or 0)
+    p["ai_skoru"] = float(aday.get("ai_skoru", p.get("ai_skoru", 0)) or 0)
+    p["adx"] = teknik.get("adx", p.get("adx"))
+    p["rsi"] = teknik.get("rsi", p.get("rsi"))
+    p["macd_hist"] = teknik.get("macd_hist", p.get("macd_hist"))
+    p["son_mikro"] = aday.get("mikro") or p.get("son_mikro") or {}
+    p["max_devam"] = max(float(p.get("max_devam", 0) or 0), p["devam_gucu"] )
+
+
+def _dinamik_cikis_skorlari(p, max_getiri, tepe_geri):
+    """0-100 Devam, Yorgunluk ve Zirve Dönüşü skorlarını üretir."""
+    m = p.get("son_mikro") or {}
+    d1 = float(m.get("d1", 0) or 0)
+    d3 = float(m.get("d3", 0) or 0)
+    d5 = float(m.get("d5", 0) or 0)
+    d10 = float(m.get("d10", 0) or 0)
+    h1 = float(m.get("hacim1x", 0) or 0)
+    hi = float(m.get("hacim_ivme", 0) or 0)
+    devam_eski = float(p.get("devam_gucu", 0) or 0)
+    kal = float(p.get("kalicilik", 0) or 0)
+    adx = p.get("adx")
+    rsi = p.get("rsi")
+    macd = p.get("macd_hist")
+
+    devam = 35.0
+    devam += min(20.0, max(0.0, devam_eski - 55.0) * 0.45)
+    devam += min(12.0, max(0.0, kal - 55.0) * 0.30)
+    if d1 > 0: devam += 7
+    if d3 > 0: devam += 8
+    if d5 > 0: devam += 6
+    if d10 > 0: devam += 4
+    if m.get("fiyat_ivme"): devam += 6
+    if m.get("basamak"): devam += 6
+    if h1 >= 1.10: devam += 4
+    if hi >= 1.10: devam += 5
+    if adx is not None and adx >= 28: devam += 5
+    if macd is not None and macd > 0: devam += 5
+    if d1 < -0.35: devam -= 8
+    if d3 < -0.50: devam -= 10
+    devam = max(0.0, min(100.0, devam))
+
+    yorgun = 10.0
+    if d1 < 0: yorgun += 12
+    if d3 < 0: yorgun += 14
+    if d1 < -0.45 and d3 < 0: yorgun += 15
+    if d3 > 0 and d1 < (d3 / 3.0) * 0.35: yorgun += 8
+    if d5 > 0 and d3 < (d5 / 5.0) * 1.2: yorgun += 7
+    if h1 < 0.80: yorgun += 7
+    if hi < 0.85: yorgun += 8
+    if rsi is not None and rsi >= 80: yorgun += 8
+    if macd is not None and macd < 0: yorgun += 12
+    if kal and kal < 55: yorgun += 10
+    max_devam = float(p.get("max_devam", devam_eski) or devam_eski)
+    if max_devam - devam_eski >= 15: yorgun += 10
+    yorgun = max(0.0, min(100.0, yorgun))
+
+    donus = 0.0
+    # Tepe geri çekilmesi tek başına SAT değildir; mikro bozulmayla birlikte ağırlık kazanır.
+    if tepe_geri >= 1.0: donus += 12
+    if tepe_geri >= 2.0: donus += 15
+    if tepe_geri >= 3.0: donus += 18
+    if tepe_geri >= 5.0: donus += 20
+    if d1 < 0: donus += 8
+    if d3 < 0: donus += 12
+    if d1 < -0.60 and d3 < -0.30: donus += 15
+    # Büyük kârda aynı geri çekilme daha anlamlıdır.
+    if max_getiri >= 10 and tepe_geri >= 2.0: donus += 5
+    if max_getiri >= 20 and tepe_geri >= 2.5: donus += 8
+    donus = max(0.0, min(100.0, donus))
+
+    # Devam güçlüyse çıkış riskini aşağı çeker; yorgunluk + dönüş riski yukarı taşır.
+    cikis = (yorgun * 0.42) + (donus * 0.48) + ((100.0 - devam) * 0.10)
+    cikis = max(0.0, min(100.0, cikis))
+    return round(devam, 1), round(yorgun, 1), round(donus, 1), round(cikis, 1)
 
 
 def al_takip_guncelle(ticker):
     """
-    Otomatik emir vermez. İlk AL fiyatından sonra görülen en yüksek fiyatı takip eder.
-    +%5'te bilgi, +%7 sonrası geri çekilmede KÂRI KORU, +%10 ve üzeri
-    kazançlarda dinamik trailing kırılırsa SAT / KÂR AL uyarısı üretir.
+    Otomatik emir vermez. Açık AL'larda tepeyi ve canlı mikro yapıyı izler.
+    Çıkışı sabit yüzdeyle değil Devam Gücü + Yorgunluk + Zirve Dönüşü ile değerlendirir.
     """
     if not AL_TAKIP:
         return
@@ -366,6 +452,7 @@ def al_takip_guncelle(ticker):
         except Exception:
             pass
 
+    simdi = time.time()
     for symbol, p in AL_TAKIP.items():
         if not p.get("aktif"):
             continue
@@ -374,9 +461,15 @@ def al_takip_guncelle(ticker):
         if not fiyat:
             continue
 
+        # Sadece açık AL coinlerinde dakikalık yapıyı yaklaşık dakikada bir yenile.
+        if simdi - float(p.get("son_mikro_zamani", 0) or 0) >= CIKIS_MIKRO_YENILEME:
+            yeni_mikro = mikro_ivme_hesapla(symbol)
+            if yeni_mikro:
+                p["son_mikro"] = yeni_mikro
+            p["son_mikro_zamani"] = simdi
+
         giris = float(p.get("giris", fiyat))
         tepe = float(p.get("tepe", giris))
-
         if fiyat > tepe:
             tepe = fiyat
             p["tepe"] = fiyat
@@ -386,56 +479,75 @@ def al_takip_guncelle(ticker):
         p["max_getiri"] = max_getiri
         tepe_geri = max(0.0, -_pct(fiyat, tepe)) if tepe > 0 else 0.0
 
-        # İlk kâr bölgesi mesajı: yalnızca bir kez.
+        devam, yorgun, donus, cikis = _dinamik_cikis_skorlari(p, max_getiri, tepe_geri)
+        p["cikis_devam"] = devam
+        p["cikis_yorgunluk"] = yorgun
+        p["cikis_donus"] = donus
+        p["cikis_skoru"] = cikis
+
         if getiri >= KAR_BILDIR_ESIK and not p.get("kar_bildirildi"):
             p["kar_bildirildi"] = True
             mesaj = (
                 f"💰 +%5 KÂR BÖLGESİ - {symbol}\n"
                 f"İlk AL: {giris:.4f} | Güncel: {fiyat:.4f}\n"
                 f"Getiri: %{getiri:+.2f} | Görülen tepe: %{max_getiri:+.2f}\n"
-                f"Not: Çık emri değil; dinamik kâr koruma artık zirveyi takip ediyor."
+                f"Devam {devam:.0f} | Yorgunluk {yorgun:.0f} | Dönüş {donus:.0f}\n"
+                f"Not: Çık emri değil; hareket canlı olarak izleniyor."
             )
             print(mesaj)
             telegram_gonder(mesaj)
 
-        # +%10 ve üzeri kârda dinamik trailing kırılırsa güçlü çıkış uyarısı.
-        trailing = _trailing_esigi(max_getiri)
-        if (
-            trailing is not None
-            and tepe_geri >= trailing
-            and not p.get("sat_bildirildi")
-        ):
+        # Güçlü devam varsa sırf küçük tepe geri çekilmesi nedeniyle SAT verme.
+        guclu_devam = devam >= 72 and yorgun < 45 and donus < 55
+
+        # SAT: anlamlı kâr + belirgin teknik yorgunluk/dönüş.
+        sat_kosulu = (
+            max_getiri >= 8.0
+            and not guclu_devam
+            and (
+                cikis >= CIKIS_SAT_SKORU
+                or (max_getiri >= 15.0 and tepe_geri >= 4.0 and donus >= 55)
+                or (max_getiri >= 20.0 and tepe_geri >= 3.5 and yorgun >= 55)
+            )
+        )
+        if sat_kosulu and not p.get("sat_bildirildi"):
             p["sat_bildirildi"] = True
             p["aktif"] = False
             mesaj = (
                 f"🔴 SAT / KÂR AL - {symbol}\n"
                 f"İlk AL: {giris:.4f} | Tepe: {tepe:.4f} | Güncel: {fiyat:.4f}\n"
-                f"Maks. kâr: %{max_getiri:+.2f} | Şu an: %{getiri:+.2f}\n"
-                f"Zirveden geri çekilme: %{tepe_geri:.2f} (trailing %{trailing:.1f})\n"
-                f"Not: Otomatik emir değildir; kârı geri vermemek için güçlü çıkış uyarısı."
+                f"Maks. kâr: %{max_getiri:+.2f} | Şu an: %{getiri:+.2f} | Tepe geri: %{tepe_geri:.2f}\n"
+                f"Devam {devam:.0f} | Yorgunluk {yorgun:.0f} | Dönüş {donus:.0f} | Çıkış {cikis:.0f}\n"
+                f"Neden: devam zayıfladı ve dönüş/yorgunluk birlikte yükseldi.\n"
+                f"Not: Otomatik emir değildir."
             )
             print(mesaj)
             telegram_gonder(mesaj)
             continue
 
-        # +%7 sonrası ilk anlamlı geri çekilmede bir kez erken kâr koruma uyarısı.
-        if (
+        # KÂRI KORU: erken uyarı. Devam hâlâ çok güçlüyse nefeslenmeye izin verir.
+        koru_kosulu = (
             max_getiri >= KAR_KORU_BASLANGIC
-            and tepe_geri >= KAR_KORU_GERI_CEKILME
-            and not p.get("kar_koru_bildirildi")
-        ):
+            and not guclu_devam
+            and (
+                cikis >= CIKIS_KORU_SKORU
+                or (tepe_geri >= 2.0 and yorgun >= 50)
+                or (tepe_geri >= 2.5 and donus >= 45)
+            )
+        )
+        if koru_kosulu and not p.get("kar_koru_bildirildi"):
             p["kar_koru_bildirildi"] = True
             mesaj = (
                 f"⚠️ KÂRI KORU - {symbol}\n"
                 f"İlk AL: {giris:.4f} | Tepe: {tepe:.4f} | Güncel: {fiyat:.4f}\n"
-                f"Maks. kâr: %{max_getiri:+.2f} | Şu an: %{getiri:+.2f}\n"
-                f"Zirveden geri çekilme: %{tepe_geri:.2f}\n"
-                f"Not: Otomatik emir değildir; kârın bir kısmını güvenceye alma uyarısıdır."
+                f"Maks. kâr: %{max_getiri:+.2f} | Şu an: %{getiri:+.2f} | Tepe geri: %{tepe_geri:.2f}\n"
+                f"Devam {devam:.0f} | Yorgunluk {yorgun:.0f} | Dönüş {donus:.0f} | Çıkış {cikis:.0f}\n"
+                f"Not: Hareket tamamen bitmiş olmak zorunda değil; kârın bir kısmını güvenceye alma uyarısıdır."
             )
             print(mesaj)
             telegram_gonder(mesaj)
 
-    # Aynı 15 sn ticker akışı AL öğrenmesini de günceller; ekstra API isteği oluşturmaz.
+    # Aynı ticker akışı AL öğrenmesini de günceller; ekstra piyasa API isteği oluşturmaz.
     al_ogrenme_guncelle(ticker)
     rejim_raporu_gerekirse_gonder()
 
@@ -1402,11 +1514,25 @@ while True:
 
                 onceki_fiyat = son_fiyatlar.get(symbol)
                 hizli_degisim = 0.0
+                hizli_degisim3 = 0.0
+                hizli_degisim5 = 0.0
 
                 if ticker_fiyat > 0 and onceki_fiyat and onceki_fiyat > 0:
                     hizli_degisim = ((ticker_fiyat - onceki_fiyat) / onceki_fiyat) * 100
 
+                # Sadece ticker verisiyle 3-5 dakikalik basamakli hizlanmayi izle.
+                # Ek BTCTurk mum istegi yok; API yukunu artirmaz.
+                gecmis = son_ticker_gecmisi.setdefault(symbol, [])
                 if ticker_fiyat > 0:
+                    gecmis.append(ticker_fiyat)
+                    if len(gecmis) > TICKER_GECMIS_UZUNLUK:
+                        del gecmis[:-TICKER_GECMIS_UZUNLUK]
+
+                    if len(gecmis) >= 4 and gecmis[-4] > 0:
+                        hizli_degisim3 = ((ticker_fiyat - gecmis[-4]) / gecmis[-4]) * 100
+                    if len(gecmis) >= 6 and gecmis[-6] > 0:
+                        hizli_degisim5 = ((ticker_fiyat - gecmis[-6]) / gecmis[-6]) * 100
+
                     son_fiyatlar[symbol] = ticker_fiyat
 
                 # 5 dakikalık tam taramalar arasında:
@@ -1420,12 +1546,30 @@ while True:
                 if izleme_bitis and not havuzda:
                     guc_izleme_havuzu.pop(symbol, None)
 
-                if not tam_tarama and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI and not havuzda:
+                # Fast Scan V2:
+                # Tek dakikada %0.40 yapmasa bile 3 dk +%0.75 veya 5 dk +%1.10
+                # basamakli hizlanan coin derin incelemeye girer. TT tipi hareketleri kacirmamak icin.
+                ticker_basamak_hizli = (hizli_degisim3 >= 0.75 or hizli_degisim5 >= 1.10)
+
+                if (
+                    not tam_tarama
+                    and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI
+                    and not ticker_basamak_hizli
+                    and not havuzda
+                ):
                     continue
 
                 if not tam_tarama:
-                    kaynak = "HAVUZ" if havuzda and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI else "HIZLI"
-                    print(f"[{kaynak}] {symbol} | 1dk: %{hizli_degisim:.2f}")
+                    if havuzda and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI and not ticker_basamak_hizli:
+                        kaynak = "HAVUZ"
+                    elif ticker_basamak_hizli and abs(hizli_degisim) < HIZLI_HAREKET_ESIGI:
+                        kaynak = "HIZLI3"
+                    else:
+                        kaynak = "HIZLI"
+                    print(
+                        f"[{kaynak}] {symbol} | 1dk: %{hizli_degisim:.2f} | "
+                        f"3dk: %{hizli_degisim3:.2f} | 5dk: %{hizli_degisim5:.2f}"
+                    )
 
                 d = veri_getir(symbol, 24)
                 o = d.get("o", [])
@@ -1651,7 +1795,16 @@ while True:
                     and degisim3 <= 10
                     and degisim1 <= 6
                     and (
-                        (hizli_degisim >= 0.30 and hacim_kat >= 1.20 and btc_fark3 >= -1.0)
+                        # Ani tek-dakika hizlanma
+                        (hizli_degisim >= 0.25 and hacim_kat >= 1.15 and btc_fark3 >= -1.0)
+                        # TT tipi basamakli hareket: tek mum patlamasi olmadan 3-5 dk birikimli ivme
+                        or (
+                            (hizli_degisim3 >= 0.70 or hizli_degisim5 >= 1.05)
+                            and hacim_kat >= 1.15
+                            and degisim1 >= -0.25
+                            and btc_fark3 >= -1.0
+                        )
+                        # Saatlik motor da yeni guclenmeye baslamissa
                         or (
                             0.70 <= degisim1 <= 4.5
                             and 0.40 <= degisim3 <= 7.0
@@ -1744,6 +1897,9 @@ while True:
                     "erken_aday": erken_aday,
                     "assistant_ana_aday": assistant_ana_aday,
                     "mikro_on_alarm": mikro_on_alarm,
+                    "hizli_degisim1": round(hizli_degisim, 3),
+                    "hizli_degisim3": round(hizli_degisim3, 3),
+                    "hizli_degisim5": round(hizli_degisim5, 3),
                     "mikro_aday": mikro_aday,
                     "mikro": mikro,
                     "guc_havuzu_adayi": guc_havuzu_adayi,
@@ -1819,7 +1975,8 @@ while True:
         mikro_on_top = sorted(
             [a for a in adaylar if a.get("mikro_on_alarm")],
             key=lambda x: (
-                x.get("degisim1", 0),
+                x.get("hizli_degisim3", 0),
+                x.get("hizli_degisim5", 0),
                 x.get("hacim", 0),
                 x.get("radar_skoru", 0),
             ),
@@ -1887,6 +2044,8 @@ while True:
             a["kalicilik_skoru"] = kal_skor
             a["kalicilik_etiket"] = kal_etiket
             a["kalicilik_nedenler"] = kal_nedenler
+            # Coin daha önce AL aldıysa, canlı teknik durumunu dinamik çıkış motoruna taşı.
+            al_takip_teknik_guncelle(a)
 
 
             # --------------------------------------------------
