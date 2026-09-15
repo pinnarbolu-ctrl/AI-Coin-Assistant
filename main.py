@@ -2097,3 +2097,7 @@ while True:
                     al_takip_guncelle(r.json().get("data", []))
                 except Exception as e:
                     print("Kâr bildirim takip hatası:", e)
+
+    except Exception as e:
+        print("Bot genel hata:", e)
+        time.sleep(30)
