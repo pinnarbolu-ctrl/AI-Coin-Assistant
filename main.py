@@ -44,6 +44,12 @@ GUC_IZLEME_SURESI = 5 * 60
 # Aynı kararın tekrar Telegram gönderimini engeller.
 son_ai_kararlar = {}
 
+# 5+ Benzer görsel etiketi için kısa süreli kalıcılık (histerezis).
+# Coin 90+ olup ÇOK GÜÇLÜ seviyesine çıktıysa, skor 80+ kaldığı sürece
+# bu işaret 5 dakika korunur. AL/BEKLE/SAT kararını ASLA değiştirmez.
+BES_PLUS_COK_GUCLU_KORUMA_SURESI = 5 * 60
+bes_plus_cok_guclu_zaman = {}
+
 # Sade birleşik: açık AL takibi
 AL_TAKIP = {}
 POZISYON_TAKIP_SURESI = 15
@@ -2152,10 +2158,26 @@ while True:
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
                     bes_skor, bes_nedenler = bes_plus_benzerlik_skoru(a)
                     # Sadece görsel sınıflandırma: filtre/karar/sıralama/gönderim mantığına etkisi YOK.
-                    # 90-100: çok güçlü işaret coin adının EN BAŞINDA
-                    # 80-89 : normal 5+ benzer işareti
-                    # 0-79  : başlıkta işaret yok; puan bilgi satırında görünmeye devam eder
+                    # 90-100: çok güçlü işaret coin adının EN BAŞINDA.
+                    # Bir kez 90+ görüldüyse, skor 80+ kaldığı sürece işaret 5 dk korunur.
+                    # 80-89 : normal 5+ benzer işareti (90+ geçmişi yoksa / koruma süresi bittiyse).
+                    # 0-79  : başlıkta işaret yok; puan bilgi satırında görünmeye devam eder.
+                    _simdi = time.time()
+                    _symbol_key = a.get("symbol", gorunen_coin)
                     if bes_skor >= 90:
+                        bes_plus_cok_guclu_zaman[_symbol_key] = _simdi
+                        _cok_guclu_aktif = True
+                    else:
+                        _son_90 = bes_plus_cok_guclu_zaman.get(_symbol_key, 0)
+                        _cok_guclu_aktif = (
+                            bes_skor >= 80
+                            and _son_90 > 0
+                            and (_simdi - _son_90) <= BES_PLUS_COK_GUCLU_KORUMA_SURESI
+                        )
+                        if bes_skor < 80 or (_son_90 and (_simdi - _son_90) > BES_PLUS_COK_GUCLU_KORUMA_SURESI):
+                            bes_plus_cok_guclu_zaman.pop(_symbol_key, None)
+
+                    if _cok_guclu_aktif:
                         bes_on_isaret = "💎💎 "
                         bes_son_isaret = " | 🔥 ÇOK GÜÇLÜ 5+ BENZER"
                     elif bes_skor >= 80:
