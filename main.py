@@ -18,7 +18,7 @@ import feedparser
 import statistics
 
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
 CHAT_IDS = [2097448038]
 
@@ -49,6 +49,17 @@ son_ai_kararlar = {}
 # bu işaret 5 dakika korunur. AL/BEKLE/SAT kararını ASLA değiştirmez.
 BES_PLUS_COK_GUCLU_KORUMA_SURESI = 5 * 60
 bes_plus_cok_guclu_zaman = {}
+
+# Çok güçlü 5+ profil için GERÇEK FİYAT DEVAM TEYİDİ.
+# AL filtresi değildir; yalnız mesajı anlamlandırır.
+# 90+ profil ilk görüldüğünde "fiyat teyidi bekleniyor" denir.
+# Sonraki 5 dk içinde fiyat başlangıca göre en az +%0.50 ilerler ve
+# en az iki 15sn kontrolde +%0.35 üstünde tutunursa kısa teyit mesajı gelir.
+BES_PLUS_FIYAT_TEYIT_SURESI = 5 * 60
+BES_PLUS_FIYAT_TEYIT_MIN_ARTIS = 0.50
+BES_PLUS_FIYAT_TUTUNMA_ESIGI = 0.35
+BES_PLUS_FIYAT_TUTUNMA_ADEDI = 2
+bes_plus_fiyat_teyit = {}
 
 # Sade birleşik: açık AL takibi
 AL_TAKIP = {}
@@ -212,6 +223,66 @@ def destek_skorlari(aday):
 
     return round(max(0, min(100, giris)), 1), round(max(0, min(100, devam)), 1)
 
+
+
+def bes_plus_fiyat_teyit_baslat(symbol, fiyat, bes_skor):
+    """90+ profil mesajından sonra fiyatın gerçekten devam edip etmediğini izler."""
+    if bes_skor < 90 or not symbol or not fiyat or fiyat <= 0:
+        return
+    now = time.time()
+    mevcut = bes_plus_fiyat_teyit.get(symbol)
+    # Aynı güçlü dalga izleniyorsa başlangıç fiyatını sürekli yukarı taşımayalım.
+    if mevcut and (now - mevcut.get("zaman", 0)) <= BES_PLUS_FIYAT_TEYIT_SURESI:
+        return
+    bes_plus_fiyat_teyit[symbol] = {
+        "fiyat": float(fiyat),
+        "zaman": now,
+        "ustte_sayac": 0,
+    }
+
+
+def bes_plus_fiyat_teyit_guncelle(ticker):
+    """15 sn ticker ile güçlü profil sonrası gerçek fiyat devamını onaylar; filtre değildir."""
+    if not bes_plus_fiyat_teyit:
+        return
+
+    fiyatlar = {}
+    for coin in ticker or []:
+        sym = coin.get("pair") or coin.get("symbol")
+        try:
+            f = float(coin.get("last", 0) or 0)
+        except (TypeError, ValueError):
+            f = 0.0
+        if sym and f > 0:
+            fiyatlar[sym] = f
+
+    now = time.time()
+    for symbol, kayit in list(bes_plus_fiyat_teyit.items()):
+        if (now - kayit.get("zaman", 0)) > BES_PLUS_FIYAT_TEYIT_SURESI:
+            bes_plus_fiyat_teyit.pop(symbol, None)
+            continue
+
+        fiyat = fiyatlar.get(symbol)
+        giris = float(kayit.get("fiyat", 0) or 0)
+        if not fiyat or giris <= 0:
+            continue
+
+        getiri = ((fiyat - giris) / giris) * 100
+        if getiri >= BES_PLUS_FIYAT_TUTUNMA_ESIGI:
+            kayit["ustte_sayac"] = int(kayit.get("ustte_sayac", 0)) + 1
+        else:
+            kayit["ustte_sayac"] = 0
+
+        if getiri >= BES_PLUS_FIYAT_TEYIT_MIN_ARTIS and kayit["ustte_sayac"] >= BES_PLUS_FIYAT_TUTUNMA_ADEDI:
+            gorunen = symbol[:-3] if symbol.endswith("TRY") else symbol
+            mesaj = (
+                f"🚀💎 {kalin_coin_yazisi(gorunen)} | ✅ 5+ GÜÇ TEYİTLİ\n"
+                f"Başlangıç: {giris:.4f} | Güncel: {fiyat:.4f} | Devam: %{getiri:+.2f}\n"
+                f"📈 Çok güçlü profil sonrası fiyat devamı onaylandı."
+            )
+            print(mesaj)
+            telegram_gonder(mesaj)
+            bes_plus_fiyat_teyit.pop(symbol, None)
 
 
 def bes_plus_benzerlik_skoru(aday):
@@ -737,7 +808,7 @@ def kalin_coin_yazisi(metin):
 
 def telegram_gonder(mesaj):
     if not BOT_TOKEN:
-        print("BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
+        print("TELEGRAM_BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -2180,17 +2251,23 @@ while True:
                     if _cok_guclu_aktif:
                         bes_on_isaret = "💎💎 "
                         bes_son_isaret = " | 🔥 ÇOK GÜÇLÜ 5+ BENZER"
+                        bes_teyit_satir = "⚠️ Fiyat teyidi bekleniyor\n"
+                        # İlk 90+ oluştuğunda sonraki gerçek fiyat devamını 15sn ticker ile izle.
+                        bes_plus_fiyat_teyit_baslat(_symbol_key, float(a.get("fiyat", 0) or 0), bes_skor)
                     elif bes_skor >= 80:
                         bes_on_isaret = "🔹 "
                         bes_son_isaret = " | 5+ BENZER"
+                        bes_teyit_satir = ""
                     else:
                         bes_on_isaret = ""
                         bes_son_isaret = ""
+                        bes_teyit_satir = ""
                     risk = a.get('risk', 'Bilinmiyor')
                     risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
 
                     mesaj += (
-                        f"{bes_on_isaret}{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_son_isaret}\n\n"
+                        f"{bes_on_isaret}{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_son_isaret}\n"
+                        f"{bes_teyit_satir}\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
                         f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
                         f"Kalıcılık {a.get('kalicilik_skoru', 0)} | 5+Benzer {bes_skor} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
@@ -2224,7 +2301,9 @@ while True:
                 try:
                     r = requests.get("https://api.btcturk.com/api/v2/ticker", timeout=10)
                     r.raise_for_status()
-                    al_takip_guncelle(r.json().get("data", []))
+                    _ticker15 = r.json().get("data", [])
+                    al_takip_guncelle(_ticker15)
+                    bes_plus_fiyat_teyit_guncelle(_ticker15)
                 except Exception as e:
                     print("Kâr bildirim takip hatası:", e)
 
