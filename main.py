@@ -2097,12 +2097,16 @@ while True:
             if not gonderilecekler:
                 print("Yeni AL kararı yok. Telegram sessiz.")
             else:
-                mesaj = ""
+                # Her coin Telegram'a AYRI mesaj olarak gider.
+                # Böylece aynı taramada bulunan coinler tek uzun mesajda birleşmez.
+                gonderilenler = []
 
                 for a in gonderilecekler:
                     teknik = a.get("teknik")
                     if not teknik:
                         continue
+
+                    mesaj = ""
 
                     ema_yon = "Yukarı" if teknik["ema20"] > teknik["ema50"] else "Aşağı"
                     macd_yon = "Pozitif" if teknik["macd_hist"] is not None and teknik["macd_hist"] > 0 else "Negatif"
@@ -2175,13 +2179,15 @@ while True:
                         f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
-                print(mesaj)
-                telegram_gonder(mesaj)
+                    # Mesajı coin bazında hemen gönder; bir sonraki coin yeni Telegram mesajı olur.
+                    print(mesaj)
+                    telegram_gonder(mesaj)
+                    gonderilenler.append(a)
 
                 # Yalnızca gerçekten gönderilen AL'ları +%5 kâr bildirimi ve 3 saatlik rejim öğrenmesi için takip et.
                 piyasa_medyan3 = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
                 btc_giris_fiyati = ticker_fiyat_haritasi.get("BTCTRY", 0)
-                for _a in gonderilecekler:
+                for _a in gonderilenler:
                     al_takip_baslat(_a)
                     al_ogrenme_baslat(_a, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris_fiyati)
 
