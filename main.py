@@ -2147,13 +2147,24 @@ while True:
 
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
                     bes_skor, bes_nedenler = bes_plus_benzerlik_skoru(a)
-                    # Sadece görsel işaret: filtre/karar/sıralama/gönderim mantığına etkisi YOK.
-                    bes_isaret = " 💎 5+ BENZER" if bes_skor >= 70 else ""
+                    # Sadece görsel sınıflandırma: filtre/karar/sıralama/gönderim mantığına etkisi YOK.
+                    # 90-100: çok güçlü işaret coin adının EN BAŞINDA
+                    # 80-89 : normal 5+ benzer işareti
+                    # 0-79  : başlıkta işaret yok; puan bilgi satırında görünmeye devam eder
+                    if bes_skor >= 90:
+                        bes_on_isaret = "💎💎 "
+                        bes_son_isaret = " | 🔥 ÇOK GÜÇLÜ 5+ BENZER"
+                    elif bes_skor >= 80:
+                        bes_on_isaret = "🔹 "
+                        bes_son_isaret = " | 5+ BENZER"
+                    else:
+                        bes_on_isaret = ""
+                        bes_son_isaret = ""
                     risk = a.get('risk', 'Bilinmiyor')
                     risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
 
                     mesaj += (
-                        f"{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_isaret}\n\n"
+                        f"{bes_on_isaret}{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_son_isaret}\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
                         f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
                         f"Kalıcılık {a.get('kalicilik_skoru', 0)} | 5+Benzer {bes_skor} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
