@@ -207,6 +207,86 @@ def destek_skorlari(aday):
     return round(max(0, min(100, giris)), 1), round(max(0, min(100, devam)), 1)
 
 
+
+def bes_plus_benzerlik_skoru(aday):
+    """
+    +%5 ve üstü giden örneklerde tekrar eden yapıya benzerliği yalnızca ETİKETLEMEK için hesaplar.
+    KRİTİK: Bu skor AL/BEKLE/SAT kararını, aday havuzunu, sıralamayı veya Telegram gönderim filtresini DEĞİŞTİRMEZ.
+    """
+    m = aday.get("mikro") or {}
+    devam = float(aday.get("devam_gucu", 0) or 0)
+    kal = float(aday.get("kalicilik_skoru", 0) or 0)
+    rel = int(aday.get("goreceli_guc_bonus", 0) or 0)
+    hacim = float(aday.get("hacim", 0) or 0)
+    radar = float(aday.get("radar_skoru", 0) or 0)
+    d1 = float(m.get("d1", 0) or 0)
+    d3 = float(m.get("d3", 0) or 0)
+    d5 = float(m.get("d5", 0) or 0)
+    d10 = float(m.get("d10", 0) or 0)
+
+    skor = 0.0
+    nedenler = []
+
+    # En belirgin ortaklıklar: Devam + Kalıcılık + 60dk göreceli güç.
+    if devam >= 80:
+        skor += 22; nedenler.append("Devam 80+")
+    elif devam >= 70:
+        skor += 18; nedenler.append("Devam 70+")
+    elif devam >= 65:
+        skor += 14; nedenler.append("Devam 65+")
+    elif devam >= 60:
+        skor += 7
+
+    if kal >= 98:
+        skor += 22; nedenler.append("Kalıcılık 98+")
+    elif kal >= 90:
+        skor += 18; nedenler.append("Kalıcılık 90+")
+    elif kal >= 88:
+        skor += 14; nedenler.append("Kalıcılık 88+")
+
+    if rel >= 2:
+        skor += 18; nedenler.append("60dk göreceli güç +2")
+    elif rel == 1:
+        skor += 7
+
+    # Çoklu momentum: tek pencere yerine birkaç pencerenin aynı yönü desteklemesi.
+    poz = sum(x > 0 for x in (d1, d3, d5, d10))
+    if poz == 4:
+        skor += 14; nedenler.append("1/3/5/10dk birlikte pozitif")
+    elif poz >= 3:
+        skor += 10; nedenler.append("çoklu momentum pozitif")
+    elif d3 > 0 and d5 > 0:
+        skor += 6
+
+    # Davranışsal devam teyitleri; bunlar kazananlarda sık tekrar etti.
+    if aday.get("basamakli_trend"):
+        skor += 8; nedenler.append("basamaklı trend")
+    if aday.get("momentum_hizlaniyor"):
+        skor += 6; nedenler.append("momentum hızlanıyor")
+    if aday.get("btc_farki_aciliyor"):
+        skor += 5; nedenler.append("BTC farkı açılıyor")
+    if aday.get("hacim_hizlaniyor"):
+        skor += 4; nedenler.append("hacim hızlanıyor")
+    if aday.get("lider_gucleniyor"):
+        skor += 3
+
+    # Radar/hacim destekleyici; sert şart değil. ZK/ALLO/ARX gibi örnekleri kaybetmemek için düşük ağırlık.
+    if hacim >= 8:
+        skor += 8; nedenler.append("hacim 8x+")
+    elif hacim >= 4:
+        skor += 6
+    elif hacim >= 1.8:
+        skor += 3
+
+    if radar >= 85:
+        skor += 6
+    elif radar >= 65:
+        skor += 4
+    elif radar >= 50:
+        skor += 2
+
+    return round(max(0, min(100, skor)), 1), nedenler
+
 def kalicilik_skoru_hesapla(aday):
     """Kalıcılık skoru yalnızca bilgi üretir; karar ve filtreleri değiştirmez."""
     symbol = aday.get("symbol", "")
@@ -375,10 +455,8 @@ def al_takip_guncelle(ticker):
 
         if getiri >= KAR_BILDIR_ESIK:
             p["kar_bildirildi"] = True
-            gorunen_coin = symbol[:-3] if symbol.endswith("TRY") else symbol
             mesaj = (
-                f"💰💰💰  {gorunen_coin}  💰💰💰\n"
-                f"🎯 +%5 KÂR BÖLGESİ\n"
+                f"💰 +%5 KÂR BÖLGESİ - {kalin_coin_yazisi(symbol[:-3] if symbol.endswith('TRY') else symbol)}\n"
                 f"İlk AL: {giris:.4f} | Güncel: {fiyat:.4f}\n"
                 f"Getiri: %{getiri:+.2f}\n"
                 f"Not: Çık emri değil; kârı değerlendirmek / çıkışa hazırlanmak için ara uyarı."
@@ -642,6 +720,14 @@ NEGATIF = [
     "dump", "decline", "crash", "selloff", "down", "weakness"
 ]
 
+
+
+def kalin_coin_yazisi(metin):
+    """Telegram parse_mode kullanmadan coin adını Unicode kalın gösterir."""
+    normal = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    bold = "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵"
+    tablo = str.maketrans(normal, bold)
+    return str(metin).upper().translate(tablo)
 
 def telegram_gonder(mesaj):
     if not BOT_TOKEN:
@@ -2060,15 +2146,17 @@ while True:
                         )
 
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
+                    bes_skor, bes_nedenler = bes_plus_benzerlik_skoru(a)
+                    # Sadece görsel işaret: filtre/karar/sıralama/gönderim mantığına etkisi YOK.
+                    bes_isaret = " 💎 5+ BENZER" if bes_skor >= 70 else ""
                     risk = a.get('risk', 'Bilinmiyor')
                     risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
 
                     mesaj += (
-                        f"🟢🟢  {gorunen_coin}  🟢🟢\n"
-                        f"{a.get('radar_kategori', '')} + 🟢 AL\n\n"
+                        f"{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_isaret}\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
                         f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
-                        f"Kalıcılık {a.get('kalicilik_skoru', 0)} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
+                        f"Kalıcılık {a.get('kalicilik_skoru', 0)} | 5+Benzer {bes_skor} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
                         f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
