@@ -18,7 +18,7 @@ import feedparser
 import statistics
 
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 CHAT_IDS = [2097448038]
 
@@ -44,25 +44,17 @@ GUC_IZLEME_SURESI = 5 * 60
 # Aynı kararın tekrar Telegram gönderimini engeller.
 son_ai_kararlar = {}
 
-# 5+ Benzer görsel etiketi için kısa süreli kalıcılık (histerezis).
-# Coin 90+ olup ÇOK GÜÇLÜ seviyesine çıktıysa, skor 80+ kaldığı sürece
-# bu işaret 5 dakika korunur. AL/BEKLE/SAT kararını ASLA değiştirmez.
-BES_PLUS_COK_GUCLU_KORUMA_SURESI = 5 * 60
-bes_plus_cok_guclu_zaman = {}
-
-# Çok güçlü 5+ profil için GERÇEK FİYAT DEVAM TEYİDİ.
-# AL filtresi değildir; yalnız mesajı anlamlandırır.
-# 90+ profil ilk görüldüğünde "fiyat teyidi bekleniyor" denir.
-# Sonraki 5 dk içinde fiyat başlangıca göre en az +%0.50 ilerler ve
-# en az iki 15sn kontrolde +%0.35 üstünde tutunursa kısa teyit mesajı gelir.
-BES_PLUS_FIYAT_TEYIT_SURESI = 5 * 60
-BES_PLUS_FIYAT_TEYIT_MIN_ARTIS = 0.50
-BES_PLUS_FIYAT_TUTUNMA_ESIGI = 0.35
-BES_PLUS_FIYAT_TUTUNMA_ADEDI = 2
-bes_plus_fiyat_teyit = {}
-
 # Sade birleşik: açık AL takibi
 AL_TAKIP = {}
+
+# 5+ Güç Fiyat Teyidi: SADECE görsel/izleme katmanı.
+# AL/BEKLE/SAT kriterlerini, aday filtrelerini veya sıralamayı değiştirmez.
+BES_FIYAT_TEYIT = {}
+BES_FIYAT_TEYIT_SURESI = 5 * 60
+BES_FIYAT_TEYIT_HEDEF = 0.50
+BES_FIYAT_TEYIT_TUTUNMA = 0.35
+BES_FIYAT_TEYIT_ARDISIK = 2
+
 POZISYON_TAKIP_SURESI = 15
 KAR_BILDIR_ESIK = 5.0
 KAR_KORU_ORAN = 40
@@ -223,66 +215,6 @@ def destek_skorlari(aday):
 
     return round(max(0, min(100, giris)), 1), round(max(0, min(100, devam)), 1)
 
-
-
-def bes_plus_fiyat_teyit_baslat(symbol, fiyat, bes_skor):
-    """90+ profil mesajından sonra fiyatın gerçekten devam edip etmediğini izler."""
-    if bes_skor < 90 or not symbol or not fiyat or fiyat <= 0:
-        return
-    now = time.time()
-    mevcut = bes_plus_fiyat_teyit.get(symbol)
-    # Aynı güçlü dalga izleniyorsa başlangıç fiyatını sürekli yukarı taşımayalım.
-    if mevcut and (now - mevcut.get("zaman", 0)) <= BES_PLUS_FIYAT_TEYIT_SURESI:
-        return
-    bes_plus_fiyat_teyit[symbol] = {
-        "fiyat": float(fiyat),
-        "zaman": now,
-        "ustte_sayac": 0,
-    }
-
-
-def bes_plus_fiyat_teyit_guncelle(ticker):
-    """15 sn ticker ile güçlü profil sonrası gerçek fiyat devamını onaylar; filtre değildir."""
-    if not bes_plus_fiyat_teyit:
-        return
-
-    fiyatlar = {}
-    for coin in ticker or []:
-        sym = coin.get("pair") or coin.get("symbol")
-        try:
-            f = float(coin.get("last", 0) or 0)
-        except (TypeError, ValueError):
-            f = 0.0
-        if sym and f > 0:
-            fiyatlar[sym] = f
-
-    now = time.time()
-    for symbol, kayit in list(bes_plus_fiyat_teyit.items()):
-        if (now - kayit.get("zaman", 0)) > BES_PLUS_FIYAT_TEYIT_SURESI:
-            bes_plus_fiyat_teyit.pop(symbol, None)
-            continue
-
-        fiyat = fiyatlar.get(symbol)
-        giris = float(kayit.get("fiyat", 0) or 0)
-        if not fiyat or giris <= 0:
-            continue
-
-        getiri = ((fiyat - giris) / giris) * 100
-        if getiri >= BES_PLUS_FIYAT_TUTUNMA_ESIGI:
-            kayit["ustte_sayac"] = int(kayit.get("ustte_sayac", 0)) + 1
-        else:
-            kayit["ustte_sayac"] = 0
-
-        if getiri >= BES_PLUS_FIYAT_TEYIT_MIN_ARTIS and kayit["ustte_sayac"] >= BES_PLUS_FIYAT_TUTUNMA_ADEDI:
-            gorunen = symbol[:-3] if symbol.endswith("TRY") else symbol
-            mesaj = (
-                f"🚀💎 {kalin_coin_yazisi(gorunen)} | ✅ 5+ GÜÇ TEYİTLİ\n"
-                f"Başlangıç: {giris:.4f} | Güncel: {fiyat:.4f} | Devam: %{getiri:+.2f}\n"
-                f"📈 Çok güçlü profil sonrası fiyat devamı onaylandı."
-            )
-            print(mesaj)
-            telegram_gonder(mesaj)
-            bes_plus_fiyat_teyit.pop(symbol, None)
 
 
 def bes_plus_benzerlik_skoru(aday):
@@ -483,6 +415,82 @@ def kalicilik_skoru_hesapla(aday):
     return skor, etiket, nedenler[:4]
 
 
+def bes_fiyat_teyit_baslat(aday, bes_skor):
+    """90+ 5+ Benzer profili için fiyat devam teyidini başlatır; işlem kararına ETKİ ETMEZ."""
+    try:
+        skor = float(bes_skor or 0)
+        symbol = aday.get("symbol")
+        fiyat = float(aday.get("fiyat", 0) or 0)
+    except Exception:
+        return
+
+    if skor < 90 or not symbol or fiyat <= 0:
+        return
+
+    # Aynı güçlü profil için aktif teyidi yeniden başlatıp süreyi uzatma.
+    mevcut = BES_FIYAT_TEYIT.get(symbol)
+    if mevcut and mevcut.get("aktif"):
+        return
+
+    BES_FIYAT_TEYIT[symbol] = {
+        "aktif": True,
+        "baslangic_fiyati": fiyat,
+        "baslangic_zamani": time.time(),
+        "maks_getiri": 0.0,
+        "ardisik_tutunma": 0,
+        "teyit_gonderildi": False,
+    }
+
+
+def bes_fiyat_teyit_guncelle(fiyatlar):
+    """Mevcut 15 sn ticker akışıyla 90+ profil sonrası gerçek fiyat devamını teyit eder."""
+    if not BES_FIYAT_TEYIT:
+        return
+
+    simdi = time.time()
+    for symbol, p in list(BES_FIYAT_TEYIT.items()):
+        if not p.get("aktif"):
+            continue
+
+        if simdi - float(p.get("baslangic_zamani", simdi)) > BES_FIYAT_TEYIT_SURESI:
+            p["aktif"] = False
+            continue
+
+        fiyat = fiyatlar.get(symbol)
+        if not fiyat:
+            continue
+
+        baslangic = float(p.get("baslangic_fiyati", fiyat) or fiyat)
+        if baslangic <= 0:
+            continue
+
+        getiri = _pct(fiyat, baslangic)
+        p["maks_getiri"] = max(float(p.get("maks_getiri", 0) or 0), getiri)
+
+        # +%0.35 üzerinde iki ardışık 15 sn kontrol = tutunma;
+        # teyit için ayrıca pencere içinde en az +%0.50 görülmüş olmalı.
+        if getiri >= BES_FIYAT_TEYIT_TUTUNMA:
+            p["ardisik_tutunma"] = int(p.get("ardisik_tutunma", 0) or 0) + 1
+        else:
+            p["ardisik_tutunma"] = 0
+
+        if (
+            not p.get("teyit_gonderildi")
+            and float(p.get("maks_getiri", 0) or 0) >= BES_FIYAT_TEYIT_HEDEF
+            and int(p.get("ardisik_tutunma", 0) or 0) >= BES_FIYAT_TEYIT_ARDISIK
+        ):
+            p["teyit_gonderildi"] = True
+            p["aktif"] = False
+            gorunen = symbol[:-3] if symbol.endswith("TRY") else symbol
+            mesaj = (
+                f"🚀💎 {kalin_coin_yazisi(gorunen)} | ✅ 5+ GÜÇ TEYİTLİ\n"
+                f"Başlangıç: {baslangic:.4f} | Güncel: {fiyat:.4f} | Devam: %{getiri:+.2f}\n"
+                f"📈 Çok güçlü profil sonrası fiyat devamı onaylandı."
+            )
+            print(mesaj)
+            telegram_gonder(mesaj)
+
+
 def al_takip_baslat(aday):
     """Gerçek AL mesajı gönderilen coini yalnızca +%5 kâr bildirimi için takip eder."""
     symbol = aday.get("symbol")
@@ -518,6 +526,9 @@ def al_takip_guncelle(ticker):
                 fiyatlar[sym] = f
         except Exception:
             pass
+
+    # Aynı 15 sn fiyat akışıyla 90+ profil sonrası gerçek fiyat devamını da kontrol et.
+    bes_fiyat_teyit_guncelle(fiyatlar)
 
     for symbol, p in AL_TAKIP.items():
         if not p.get("aktif") or p.get("kar_bildirildi"):
@@ -808,7 +819,7 @@ def kalin_coin_yazisi(metin):
 
 def telegram_gonder(mesaj):
     if not BOT_TOKEN:
-        print("TELEGRAM_BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
+        print("BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -2229,31 +2240,13 @@ while True:
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
                     bes_skor, bes_nedenler = bes_plus_benzerlik_skoru(a)
                     # Sadece görsel sınıflandırma: filtre/karar/sıralama/gönderim mantığına etkisi YOK.
-                    # 90-100: çok güçlü işaret coin adının EN BAŞINDA.
-                    # Bir kez 90+ görüldüyse, skor 80+ kaldığı sürece işaret 5 dk korunur.
-                    # 80-89 : normal 5+ benzer işareti (90+ geçmişi yoksa / koruma süresi bittiyse).
-                    # 0-79  : başlıkta işaret yok; puan bilgi satırında görünmeye devam eder.
-                    _simdi = time.time()
-                    _symbol_key = a.get("symbol", gorunen_coin)
+                    # 90-100: çok güçlü işaret coin adının EN BAŞINDA
+                    # 80-89 : normal 5+ benzer işareti
+                    # 0-79  : başlıkta işaret yok; puan bilgi satırında görünmeye devam eder
                     if bes_skor >= 90:
-                        bes_plus_cok_guclu_zaman[_symbol_key] = _simdi
-                        _cok_guclu_aktif = True
-                    else:
-                        _son_90 = bes_plus_cok_guclu_zaman.get(_symbol_key, 0)
-                        _cok_guclu_aktif = (
-                            bes_skor >= 80
-                            and _son_90 > 0
-                            and (_simdi - _son_90) <= BES_PLUS_COK_GUCLU_KORUMA_SURESI
-                        )
-                        if bes_skor < 80 or (_son_90 and (_simdi - _son_90) > BES_PLUS_COK_GUCLU_KORUMA_SURESI):
-                            bes_plus_cok_guclu_zaman.pop(_symbol_key, None)
-
-                    if _cok_guclu_aktif:
                         bes_on_isaret = "💎💎 "
                         bes_son_isaret = " | 🔥 ÇOK GÜÇLÜ 5+ BENZER"
-                        bes_teyit_satir = "⚠️ Fiyat teyidi bekleniyor\n"
-                        # İlk 90+ oluştuğunda sonraki gerçek fiyat devamını 15sn ticker ile izle.
-                        bes_plus_fiyat_teyit_baslat(_symbol_key, float(a.get("fiyat", 0) or 0), bes_skor)
+                        bes_teyit_satir = "⚠️ Fiyat teyidi bekleniyor\n\n"
                     elif bes_skor >= 80:
                         bes_on_isaret = "🔹 "
                         bes_son_isaret = " | 5+ BENZER"
@@ -2266,11 +2259,11 @@ while True:
                     risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
 
                     mesaj += (
-                        f"{bes_on_isaret}{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_son_isaret}\n"
-                        f"{bes_teyit_satir}\n"
+                        f"{bes_on_isaret}{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_son_isaret}\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
                         f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
                         f"Kalıcılık {a.get('kalicilik_skoru', 0)} | 5+Benzer {bes_skor} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
+                        f"{bes_teyit_satir}"
                         f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
@@ -2281,6 +2274,8 @@ while True:
                     # Mesajı coin bazında hemen gönder; bir sonraki coin yeni Telegram mesajı olur.
                     print(mesaj)
                     telegram_gonder(mesaj)
+                    # Yalnız 90+ profilde fiyat teyidi takibini başlat; AL kararını değiştirmez.
+                    bes_fiyat_teyit_baslat(a, bes_skor)
                     gonderilenler.append(a)
 
                 # Yalnızca gerçekten gönderilen AL'ları +%5 kâr bildirimi ve 3 saatlik rejim öğrenmesi için takip et.
@@ -2301,9 +2296,7 @@ while True:
                 try:
                     r = requests.get("https://api.btcturk.com/api/v2/ticker", timeout=10)
                     r.raise_for_status()
-                    _ticker15 = r.json().get("data", [])
-                    al_takip_guncelle(_ticker15)
-                    bes_plus_fiyat_teyit_guncelle(_ticker15)
+                    al_takip_guncelle(r.json().get("data", []))
                 except Exception as e:
                     print("Kâr bildirim takip hatası:", e)
 
