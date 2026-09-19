@@ -375,8 +375,10 @@ def al_takip_guncelle(ticker):
 
         if getiri >= KAR_BILDIR_ESIK:
             p["kar_bildirildi"] = True
+            gorunen_coin = symbol[:-3] if symbol.endswith("TRY") else symbol
             mesaj = (
-                f"💰 +%5 KÂR BÖLGESİ - {symbol}\n"
+                f"💰💰💰  {gorunen_coin}  💰💰💰\n"
+                f"🎯 +%5 KÂR BÖLGESİ\n"
                 f"İlk AL: {giris:.4f} | Güncel: {fiyat:.4f}\n"
                 f"Getiri: %{getiri:+.2f}\n"
                 f"Not: Çık emri değil; kârı değerlendirmek / çıkışa hazırlanmak için ara uyarı."
@@ -2062,7 +2064,8 @@ while True:
                     risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
 
                     mesaj += (
-                        f"{gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
+                        f"🟢🟢  {gorunen_coin}  🟢🟢\n"
+                        f"{a.get('radar_kategori', '')} + 🟢 AL\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
                         f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
                         f"Kalıcılık {a.get('kalicilik_skoru', 0)} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
