@@ -415,16 +415,15 @@ def kalicilik_skoru_hesapla(aday):
     return skor, etiket, nedenler[:4]
 
 
-def bes_fiyat_teyit_baslat(aday, bes_skor):
+def bes_fiyat_teyit_baslat(aday, bes_skor=None):
     """90+ 5+ Benzer profili için fiyat devam teyidini başlatır; işlem kararına ETKİ ETMEZ."""
     try:
-        skor = float(bes_skor or 0)
         symbol = aday.get("symbol")
         fiyat = float(aday.get("fiyat", 0) or 0)
     except Exception:
         return
 
-    if skor < 90 or not symbol or fiyat <= 0:
+    if not symbol or fiyat <= 0:
         return
 
     # Aynı güçlü profil için aktif teyidi yeniden başlatıp süreyi uzatma.
@@ -443,7 +442,7 @@ def bes_fiyat_teyit_baslat(aday, bes_skor):
 
 
 def bes_fiyat_teyit_guncelle(fiyatlar):
-    """Mevcut 15 sn ticker akışıyla 90+ profil sonrası gerçek fiyat devamını teyit eder."""
+    """Mevcut 15 sn ticker akışıyla gönderilmiş AL sonrası gerçek fiyat devamını teyit eder."""
     if not BES_FIYAT_TEYIT:
         return
 
@@ -483,9 +482,9 @@ def bes_fiyat_teyit_guncelle(fiyatlar):
             p["aktif"] = False
             gorunen = symbol[:-3] if symbol.endswith("TRY") else symbol
             mesaj = (
-                f"🚀💎 {kalin_coin_yazisi(gorunen)} | ✅ 5+ GÜÇ TEYİTLİ\n"
+                f"🚀 {kalin_coin_yazisi(gorunen)} | ✅ FİYAT DEVAMI TEYİTLİ\n"
                 f"Başlangıç: {baslangic:.4f} | Güncel: {fiyat:.4f} | Devam: %{getiri:+.2f}\n"
-                f"📈 Çok güçlü profil sonrası fiyat devamı onaylandı."
+                f"📈 AL sonrası fiyat devamı onaylandı."
             )
             print(mesaj)
             telegram_gonder(mesaj)
@@ -2238,23 +2237,9 @@ while True:
                         )
 
                     gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
+                    # 5+ benzerlik skoru öğrenme/arka plan için hesaplanmaya devam eder;
+                    # Telegram mesajında artık elmas/5+ etiketi olarak gösterilmez.
                     bes_skor, bes_nedenler = bes_plus_benzerlik_skoru(a)
-                    # Sadece görsel sınıflandırma: filtre/karar/sıralama/gönderim mantığına etkisi YOK.
-                    # 90-100: çok güçlü işaret coin adının EN BAŞINDA
-                    # 80-89 : normal 5+ benzer işareti
-                    # 0-79  : başlıkta işaret yok; puan bilgi satırında görünmeye devam eder
-                    if bes_skor >= 90:
-                        bes_on_isaret = "💎💎 "
-                        bes_son_isaret = " | 🔥 ÇOK GÜÇLÜ 5+ BENZER"
-                        bes_teyit_satir = "⚠️ Fiyat teyidi bekleniyor\n\n"
-                    elif bes_skor >= 80:
-                        bes_on_isaret = "🔹 "
-                        bes_son_isaret = " | 5+ BENZER"
-                        bes_teyit_satir = ""
-                    else:
-                        bes_on_isaret = ""
-                        bes_son_isaret = ""
-                        bes_teyit_satir = ""
                     risk = a.get('risk', 'Bilinmiyor')
                     risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
 
@@ -2279,11 +2264,10 @@ while True:
                         )
 
                     mesaj += (
-                        f"{bes_on_isaret}{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_son_isaret}\n\n"
+                        f"{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
                         f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
-                        f"Kalıcılık {a.get('kalicilik_skoru', 0)} | 5+Benzer {bes_skor} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
-                        f"{bes_teyit_satir}"
+                        f"Kalıcılık {a.get('kalicilik_skoru', 0)} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
                         f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
@@ -2294,8 +2278,8 @@ while True:
                     # Mesajı coin bazında hemen gönder; bir sonraki coin yeni Telegram mesajı olur.
                     print(mesaj)
                     telegram_gonder(mesaj)
-                    # Yalnız 90+ profilde fiyat teyidi takibini başlat; AL kararını değiştirmez.
-                    bes_fiyat_teyit_baslat(a, bes_skor)
+                    # Gönderilmiş her AL için fiyat devamını izler; AL kararını değiştirmez.
+                    bes_fiyat_teyit_baslat(a)
                     gonderilenler.append(a)
 
                 # Yalnızca gerçekten gönderilen AL'ları +%5 kâr bildirimi ve 3 saatlik rejim öğrenmesi için takip et.
