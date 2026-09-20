@@ -2258,6 +2258,26 @@ while True:
                     risk = a.get('risk', 'Bilinmiyor')
                     risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
 
+                    # Piyasa desteği yalnız MESAJ BİLGİSİDİR; AL filtresini/skorları değiştirmez.
+                    # BTC ve piyasa 3 saatlik hareketi birlikte değerlendirilir.
+                    _piyasa3_anlik = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
+                    _btc3_anlik = float(btc_d.get("3s", 0) or 0)
+                    if _btc3_anlik >= 1.0 and _piyasa3_anlik >= 1.0:
+                        piyasa_destek_satir = (
+                            f"🌍 Piyasa desteği: 🟢 GÜÇLÜ | "
+                            f"BTC 3s %{_btc3_anlik:+.2f} | Piyasa 3s %{_piyasa3_anlik:+.2f}"
+                        )
+                    elif _btc3_anlik <= -1.0 or _piyasa3_anlik <= -1.0:
+                        piyasa_destek_satir = (
+                            f"🌍 Piyasa desteği: 🔴 ZAYIF | "
+                            f"BTC 3s %{_btc3_anlik:+.2f} | Piyasa 3s %{_piyasa3_anlik:+.2f}"
+                        )
+                    else:
+                        piyasa_destek_satir = (
+                            f"🌍 Piyasa desteği: 🟡 SINIRLI / YATAY | "
+                            f"BTC 3s %{_btc3_anlik:+.2f} | Piyasa 3s %{_piyasa3_anlik:+.2f}"
+                        )
+
                     mesaj += (
                         f"{bes_on_isaret}{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{bes_son_isaret}\n\n"
                         f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
@@ -2267,7 +2287,7 @@ while True:
                         f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
                         f"{mikro_satir}"
                         f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
-                        f"📌 Takip: AL anlık | +%5'te sadece kâr ara uyarısı\n"
+                        f"{piyasa_destek_satir}\n"
                         f"{neden_alarm}Neden: {neden}\n\n"
                     )
 
