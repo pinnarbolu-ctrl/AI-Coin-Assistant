@@ -67,7 +67,7 @@ MIN_KAR_KORUMA = 2.5
 # AL öğrenme verisini Railway Volume varsa kalıcı alanda tut.
 # AL_OGRENME_DOSYA env ile özel yol verilmişse onu kullanır.
 _RAILWAY_VOLUME = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
-_AL_DEFAULT_DIR = _RAILWAY_VOLUME if _RAILWAY_VOLUME else "."
+_AL_DEFAULT_DIR = _RAILWAY_VOLUME if _RAILWAY_VOLUME else ("/data" if os.path.isdir("/data") else ".")
 AL_OGRENME_DOSYA = os.getenv("AL_OGRENME_DOSYA", os.path.join(_AL_DEFAULT_DIR, "al_ogrenme_rejim.json"))
 AL_OGRENME_SURESI = 3 * 60 * 60
 REJIM_RAPOR_ARALIGI = 24 * 60 * 60
@@ -656,6 +656,12 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
         # Genel Güç yalnız bilgi/öğrenme metriğidir; AL filtresini değiştirmez.
         "genel_guc": float(aday.get("genel_guc_skoru", 0) or 0),
+        # Genel Güç alt bileşenleri: haftalık motor puanın hangi bloktan şiştiğini görebilsin.
+        "skor_kalite": float(aday.get("genel_skor_kalite", 0) or 0),
+        "momentum_kalite": float(aday.get("genel_momentum_kalite", 0) or 0),
+        "piyasa_kalite": float(aday.get("genel_piyasa_kalite", 0) or 0),
+        "neden_kalite": float(aday.get("genel_neden_kalite", 0) or 0),
+        "neden_sayisi": int(aday.get("neden_sayisi", 0) or 0),
         "kategori": aday.get("radar_kategori", ""),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
@@ -933,13 +939,127 @@ def _bayrak_etki(kayitlar, anahtar):
     rv,ry=_basari_orani(var),_basari_orani(yok)
     return rv,ry,rv-ry,len(var),len(yok)
 
+def _pearson(kayitlar, a, b):
+    cift=[]
+    for x in kayitlar:
+        try:
+            va=x.get(a); vb=x.get(b)
+            if va is None or vb is None:
+                continue
+            cift.append((float(va), float(vb)))
+        except Exception:
+            pass
+    if len(cift) < GELISTIRME_MIN_KAYIT:
+        return None
+    xs=[z[0] for z in cift]; ys=[z[1] for z in cift]
+    mx=sum(xs)/len(xs); my=sum(ys)/len(ys)
+    dx=[v-mx for v in xs]; dy=[v-my for v in ys]
+    sx=sum(v*v for v in dx); sy=sum(v*v for v in dy)
+    if sx <= 0 or sy <= 0:
+        return None
+    r=sum(dx[i]*dy[i] for i in range(len(dx))) / ((sx*sy) ** 0.5)
+    return max(-1.0, min(1.0, r))
+
+
+def _puan_sismesi_onerileri(kayitlar):
+    """Yüksek görünen sinyallerde aynı hareketi tekrar ödüllendiren skor çiftlerini arar.
+    Amaç yeni veto üretmek değil; korelasyonlu bileşenleri grup/tavan puanına çevirmeyi önermektir.
+    """
+    if len(kayitlar) < GELISTIRME_MIN_KAYIT:
+        return []
+
+    # 80+ Genel Güç özellikle kullanıcıya 'çok güçlü' görünür; burada başarısız olanları ayrı inceliyoruz.
+    yuksek=[x for x in kayitlar if float(x.get("genel_guc",0) or 0) >= 80.0]
+    if len(yuksek) < GELISTIRME_MIN_GRUP * 2:
+        return []
+    basarili=[x for x in yuksek if float(x.get("max_getiri",0) or 0) >= 5.0]
+    basarisiz=[x for x in yuksek if float(x.get("max_getiri",0) or 0) < 5.0]
+    if len(basarisiz) < GELISTIRME_MIN_GRUP:
+        return []
+
+    alanlar=[
+        ("ai","AI"),("giris_skoru","Giriş"),("devam","Devam"),("kalicilik","Kalıcılık"),
+        ("radar","Radar"),("rsi","RSI"),("adx","ADX"),
+        ("skor_kalite","Skor bloğu"),("momentum_kalite","Momentum bloğu"),
+        ("neden_kalite","Neden bloğu"),
+    ]
+    medyan={}
+    for alan,_ in alanlar:
+        medyan[alan]=_medyan_deger(kayitlar,alan)
+
+    adaylar=[]
+    for i in range(len(alanlar)):
+        for j in range(i+1,len(alanlar)):
+            a,ad_a=alanlar[i]; b,ad_b=alanlar[j]
+            # Bileşen bloklarını kendi içindeki ham alanlarla eşleştirince korelasyon doğal;
+            # rapor için daha anlamlı ham-ham veya blok-blok çiftleri tercih edilir.
+            if (a.endswith("_kalite") != b.endswith("_kalite")):
+                continue
+            r=_pearson(kayitlar,a,b)
+            if r is None or r < 0.72:
+                continue
+            ea,eb=medyan.get(a),medyan.get(b)
+            if ea is None or eb is None:
+                continue
+            def ikisi_yuksek(grup):
+                if not grup: return 0.0
+                n=0
+                for x in grup:
+                    try:
+                        if float(x.get(a,0) or 0) >= ea and float(x.get(b,0) or 0) >= eb:
+                            n+=1
+                    except Exception:
+                        pass
+                return n/len(grup)*100.0
+            fb=ikisi_yuksek(basarisiz)
+            fs=ikisi_yuksek(basarili)
+            fark=fb-fs
+            # Yalnız başarısız yüksek-puan sinyallerinde belirgin biçimde daha sık birlikteyse 'şişme' de.
+            if fark < 20.0:
+                continue
+            adaylar.append({
+                "puan": abs(fark) + r*20,
+                "eylem":"PUAN ŞİŞMESİNİ AZALT / GRUPLA",
+                "ozellik":f"{ad_a} + {ad_b}",
+                "rejim":"YÜKSEK GENEL GÜÇ",
+                "aciklama":(
+                    f"Genel Güç 80+ sinyallerde bu ikili +%5 yapmayanların %{fb:.1f}'inde, "
+                    f"+%5 yapanların %{fs:.1f}'inde birlikte yüksek. Korelasyon r={r:.2f} "
+                    f"(yüksek grup n={len(yuksek)}, başarısız={len(basarisiz)}, başarılı={len(basarili)})."
+                ),
+                "kod":(
+                    "İki göstergenin ayrı ayrı tam puan vermesi yerine ortak grup puanı/tavanı dene; "
+                    "sert veto yapma. Genel Güç ve AL kriterini otomatik değiştirme."
+                ),
+                "guven":_guven_hesapla(fark,len(yuksek)),
+            })
+
+    # Yüksek Genel Güç kendi başına başarısızları yeterince ayırmıyorsa ayrıca kalibrasyon uyarısı üret.
+    genel=_basari_orani(kayitlar); yuksek_oran=_basari_orani(yuksek)
+    if len(yuksek) >= GELISTIRME_MIN_GRUP*2 and yuksek_oran <= genel + 5.0:
+        adaylar.append({
+            "puan": 30 + max(0, genel-yuksek_oran),
+            "eylem":"GENEL GÜÇ AĞIRLIKLARINI YENİDEN KALİBRE ET",
+            "ozellik":"Genel Güç 80+",
+            "rejim":"TÜM PİYASA",
+            "aciklama":f"Genel başarı %{genel:.1f}; Genel Güç 80+ başarı %{yuksek_oran:.1f} (n={len(yuksek)}). Yüksek puan beklenen ayrımı üretmiyor.",
+            "kod":"Skor/Momentum/Piyasa/Neden ağırlıklarını haftalık sonuçlara göre yeniden tart; önce bilgi puanı olarak kalsın.",
+            "guven":_guven_hesapla(abs(yuksek_oran-genel),len(yuksek)),
+        })
+
+    adaylar.sort(key=lambda x:(x.get("puan",0),x.get("guven",0)),reverse=True)
+    return adaylar[:3]
+
+
 def _gelistirme_onerileri_uret(kayitlar):
     """+%5 sonucunu hem mevcut kod kurallarıyla hem piyasa rejimiyle birlikte yorumlar."""
     if len(kayitlar) < GELISTIRME_MIN_KAYIT:
         return []
     oneriler=[]
     sayisal=[
-        ("genel_guc","Genel Güç"),("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
+        ("genel_guc","Genel Güç"),("skor_kalite","Genel Güç / Skor bloğu"),("momentum_kalite","Genel Güç / Momentum bloğu"),
+        ("piyasa_kalite","Genel Güç / Piyasa bloğu"),("neden_kalite","Genel Güç / Neden bloğu"),("neden_sayisi","Neden sayısı"),
+        ("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
         ("radar","Radar skoru"),("hacim","Hacim çarpanı"),("d1","1dk momentum"),("d3","3dk momentum"),
         ("d5","5dk momentum"),("d10","10dk momentum"),("vr310","3dk hacim / 10dk ort"),
         ("coin_btc_60","Coin-BTC 60dk göreceli güç"),("coin_piyasa_60","Coin-Piyasa 60dk göreceli güç"),
@@ -1027,6 +1147,10 @@ def _gelistirme_onerileri_uret(kayitlar):
                 "guven":_guven_hesapla(fark,len(kayitlar))
             })
 
+    # 4) Yüksek görünen ama +%5 yapmayan sinyallerde puan şişmesi/korelasyon analizi.
+    # Aynı yükselişi birden fazla gösterge tekrar ödüllüyorsa "grup/tavan puanı" önerisi üretir.
+    oneriler.extend(_puan_sismesi_onerileri(kayitlar))
+
     # En güçlü, tekrarsız 5 geliştirme önerisini seç.
     oneriler.sort(key=lambda x:(x.get("puan",0),x.get("guven",0)),reverse=True)
     secilen=[]; gorulen=set()
@@ -1062,7 +1186,7 @@ def gelistirme_oneri_raporu_gerekirse_gonder():
             satirlar.append(f"   Dosyada: {o.get('kod','-')}")
             satirlar.append(f"   Güven: %{o['guven']}")
         satirlar.append("")
-        satirlar.append("Not: Motor mevcut Assistant kuralını + piyasa rejimini + +%5 sonuçlarını birlikte değerlendirir; kodu otomatik değiştirmez.")
+        satirlar.append("Not: Motor mevcut Assistant kuralını + piyasa rejimini + +%5 sonuçlarını birlikte değerlendirir; ayrıca yüksek puanlı başarısız sinyallerde korelasyon/puan şişmesini arar. Kodu otomatik değiştirmez.")
         mesaj = "\n".join(satirlar)
     print(mesaj)
     telegram_gonder(mesaj)
@@ -2625,6 +2749,12 @@ while True:
                         0.25 * _neden_kalite
                     )
                     a["genel_guc_skoru"] = int(_genel_guc)
+                    # Haftalık geliştirme motoru yalnız toplamı değil, puanı hangi blokların şişirdiğini de görsün.
+                    a["genel_skor_kalite"] = round(_skor_kalite, 2)
+                    a["genel_momentum_kalite"] = round(_momentum_kalite, 2)
+                    a["genel_piyasa_kalite"] = round(_piyasa_kalite, 2)
+                    a["genel_neden_kalite"] = round(_neden_kalite, 2)
+                    a["neden_sayisi"] = int(toplam_neden_sayisi)
 
                     # İki ana sütun: solda Skorlar / sağda Piyasa; altta Momentum.
                     # Her sütunun kendi bilgileri alt alta kalır.
