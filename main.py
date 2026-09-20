@@ -16,6 +16,7 @@ import json
 import requests
 import feedparser
 import statistics
+import html
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -653,6 +654,8 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "giris_skoru": float(aday.get("giris_kalitesi", 0) or 0),
         "devam": float(aday.get("devam_gucu", 0) or 0),
         "kalicilik": float(aday.get("kalicilik_skoru", 0) or 0),
+        # Genel Güç yalnız bilgi/öğrenme metriğidir; AL filtresini değiştirmez.
+        "genel_guc": float(aday.get("genel_guc_skoru", 0) or 0),
         "kategori": aday.get("radar_kategori", ""),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
@@ -862,6 +865,7 @@ def _ozellik_var(k, anahtar):
 # Öneri motoru istatistiği bu tabloyla birleştirir; böylece yalnız "özellik iyi" demek yerine
 # dosyada halihazırda kullanılıyor mu ve nasıl değiştirilmesi gerektiğini söyler.
 MEVCUT_KOD_KURALLARI = {
+    "Genel Güç": (False, "yalnız bilgi/öğrenme puanı; AL filtresi değil"),
     "Devam Gücü": (False, "AL kapısında doğrudan veto değil; destek/izleme bilgisi"),
     "Kalıcılık": (False, "AL kapısında doğrudan kullanılmıyor"),
     "Giriş skoru": (False, "AL kapısında doğrudan kullanılmıyor"),
@@ -935,7 +939,7 @@ def _gelistirme_onerileri_uret(kayitlar):
         return []
     oneriler=[]
     sayisal=[
-        ("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
+        ("genel_guc","Genel Güç"),("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
         ("radar","Radar skoru"),("hacim","Hacim çarpanı"),("d1","1dk momentum"),("d3","3dk momentum"),
         ("d5","5dk momentum"),("d10","10dk momentum"),("vr310","3dk hacim / 10dk ort"),
         ("coin_btc_60","Coin-BTC 60dk göreceli güç"),("coin_piyasa_60","Coin-Piyasa 60dk göreceli güç"),
@@ -1104,7 +1108,7 @@ def kalin_coin_yazisi(metin):
     tablo = str.maketrans(normal, bold)
     return str(metin).upper().translate(tablo)
 
-def telegram_gonder(mesaj):
+def telegram_gonder(mesaj, parse_mode=None):
     if not BOT_TOKEN:
         print("BOT_TOKEN bulunamadı. Railway Variables kontrol et.")
         return
@@ -1113,9 +1117,12 @@ def telegram_gonder(mesaj):
 
     for chat_id in CHAT_IDS:
         try:
+            params = {"chat_id": chat_id, "text": mesaj}
+            if parse_mode:
+                params["parse_mode"] = parse_mode
             r = requests.get(
                 url,
-                params={"chat_id": chat_id, "text": mesaj},
+                params=params,
                 timeout=10
             )
             print(chat_id, r.text)
@@ -2511,11 +2518,17 @@ while True:
                             f"(BTC {a.get('coin_btc_60', 0):+.2f} / piyasa {a.get('coin_piyasa_60', 0):+.2f})"
                         )
 
-                    # 6+ gerçek olumlu neden varsa yalnızca Neden başına alarm koy.
-                    # AL kararı veya filtrelerde hiçbir etkisi yok.
-                    toplam_neden_sayisi = len(a.get("nedenler", [])) + len(hizlar)
+                    # Neden sayısı: teknik nedenler (en fazla 4) + hareket teyitleri
+                    # (en fazla 5) + 60dk göreceli güç nedeni (en fazla 1) = en fazla 10.
+                    # Bu sayaç yalnız mesaj bilgisidir; AL kararı/filtreleri değiştirmez.
+                    toplam_neden_sayisi = (
+                        len(a.get("nedenler", []))
+                        + len(hizlar)
+                        + (1 if rel_bonus else 0)
+                    )
                     neden_alarm = "🚨 🚨 " if toplam_neden_sayisi >= 6 else ""
-                    neden = " • ".join(nedenler[:5])
+                    # Teknik nedenleri artık kesme; farkları sonradan görebilmek için hepsini yaz.
+                    neden = " • ".join(nedenler)
 
                     mikro = a.get("mikro") or {}
                     mikro_satir = ""
@@ -2552,17 +2565,10 @@ while True:
                             f"BTC 3s %{_btc3_anlik:+.2f} | Piyasa 3s %{_piyasa3_anlik:+.2f}"
                         )
 
-                    # Neden kısmında zaten özellik paragrafında gösterilen tekrarları temizle.
-                    _neden_parcalari = [p.strip() for p in str(neden).split(" • ") if p.strip()]
-                    _tekrar_baslangiclari = (
-                        "EMA trendi", "RSI ", "MACD ", "Radar Yıldız"
-                    )
-                    _neden_temiz = " • ".join(
-                        p for p in _neden_parcalari
-                        if not p.startswith(_tekrar_baslangiclari)
-                    )
-                    if not _neden_temiz:
-                        _neden_temiz = "Mevcut AL koşulları birlikte sağlandı."
+                    # Nedenleri artık temizleyip düşürme: teknik nedenler dahil hepsi görünür.
+                    # Böylece haftalık geliştirme analizinde hangi özelliklerin eşlik ettiği
+                    # Telegram üzerinden de açıkça izlenebilir.
+                    _neden_temiz = neden or "Mevcut AL koşulları birlikte sağlandı."
 
                     # Telefon ekranında daha okunaklı kompakt 2x2 düzen:
                     # her satırda en fazla iki özellik, Neden bölümü ayrı paragraf.
@@ -2579,7 +2585,48 @@ while True:
                     else:
                         _destek_etiket = "🟡 SINIRLI / YATAY"
 
-                    # İki ana sütun: solda Skorlar / sağda Piyasa; altta Momentum / Teknik.
+                    # GENEL GÜÇ V1 — yalnız bilgi/öğrenme puanıdır, AL filtresine dokunmaz.
+                    # Skor kalitesi %30 + momentum %25 + piyasa desteği %20 + neden kalitesi %25.
+                    def _clamp100(v):
+                        try:
+                            return max(0.0, min(100.0, float(v)))
+                        except Exception:
+                            return 0.0
+
+                    _skor_kalite = sum([
+                        _clamp100(a.get('ai_skoru', 0)),
+                        _clamp100(a.get('giris_kalitesi', 0)),
+                        _clamp100(a.get('devam_gucu', 0)),
+                        _clamp100(a.get('kalicilik_skoru', 0)),
+                    ]) / 4.0
+
+                    # Yüzdesel momentumları ortak 0-100 ölçeğine taşı. 0%% yaklaşık nötr=50.
+                    def _momentum_puani(x):
+                        return _clamp100(50.0 + 12.0 * float(x or 0))
+                    _momentum_kalite = (
+                        0.15 * _momentum_puani(_d1) +
+                        0.25 * _momentum_puani(_d3) +
+                        0.30 * _momentum_puani(_d5) +
+                        0.30 * _momentum_puani(_d10)
+                    )
+
+                    if _destek_etiket.startswith("🟢"):
+                        _piyasa_kalite = 85.0
+                    elif _destek_etiket.startswith("🔴"):
+                        _piyasa_kalite = 25.0
+                    else:
+                        _piyasa_kalite = 55.0
+
+                    _neden_kalite = _clamp100((toplam_neden_sayisi / 10.0) * 100.0)
+                    _genel_guc = round(
+                        0.30 * _skor_kalite +
+                        0.25 * _momentum_kalite +
+                        0.20 * _piyasa_kalite +
+                        0.25 * _neden_kalite
+                    )
+                    a["genel_guc_skoru"] = int(_genel_guc)
+
+                    # İki ana sütun: solda Skorlar / sağda Piyasa; altta Momentum.
                     # Her sütunun kendi bilgileri alt alta kalır.
                     _sol1 = [
                         f"AI {a.get('ai_skoru', 0)}",
@@ -2604,35 +2651,47 @@ while True:
                         f"5dk %{_d5}",
                         f"10dk %{_d10}",
                     ]
-                    _sag2 = [
-                        f"EMA {ema_yon}",
-                        f"RSI {teknik['rsi']}",
-                        f"ADX {teknik['adx']}",
-                        f"MACD {macd_yon}",
-                    ]
+                    # Teknik göstergeler sütunda tekrar gösterilmez.
+                    # EMA / RSI / ADX / MACD ile ilgili en fazla 4 teknik neden zaten
+                    # a["nedenler"] içinde bulunur ve aşağıdaki Neden bölümünde görünür.
 
-                    def _iki_sutun_baslik_ve_satirlar(sol_baslik, sag_baslik, sol, sag, genislik=22):
-                        sat = [f"{sol_baslik:<{genislik}}{sag_baslik}"]
+                    def _iki_sutun_baslik_ve_satirlar(sol_baslik, sag_baslik, sol, sag, genislik=18):
+                        # Telegram normal yazı tipi orantılı olduğu için boşluklarla sütunlar kayıyordu.
+                        # Bu blok HTML <pre> içinde monospace gönderilir; sağ sütun her satırda aynı hizada başlar.
+                        sat = [f"{sol_baslik:<{genislik}}│ {sag_baslik}"]
                         n = max(len(sol), len(sag))
                         for i in range(n):
                             l = sol[i] if i < len(sol) else ""
                             r = sag[i] if i < len(sag) else ""
-                            sat.append(f"{l:<{genislik}}{r}")
+                            sat.append(f"{l:<{genislik}}│ {r}")
                         return "\n".join(sat)
 
                     _blok_ust = _iki_sutun_baslik_ve_satirlar("📊 SKORLAR", "📈 PİYASA", _sol1, _sag1)
-                    _blok_alt = _iki_sutun_baslik_ve_satirlar("⏱ MOMENTUM", "🧭 TEKNİK", _sol2, _sag2)
+                    # Alt bölüm artık yalnız momentumdur; Teknik tekrarları Neden kısmındadır.
+                    _blok_alt = "⏱ MOMENTUM\n" + "\n".join(_sol2)
 
-                    mesaj += (
-                        f"{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
-                        f"{_blok_ust}\n\n"
-                        f"{_blok_alt}\n\n"
-                        f"{neden_alarm}📌 Neden: {_neden_temiz}\n\n"
+                    # Yalnız bu AL mesajı HTML olarak gönderilir. Dinamik alanlar escape edilir.
+                    # Böylece <pre> bloğunda iki sütun gerçekten düz görünür; diğer Telegram mesajlarına dokunulmaz.
+                    mesaj_html = (
+                        f"{html.escape(kalin_coin_yazisi(gorunen_coin))} | {html.escape(str(a.get('radar_kategori', '')))} + 🟢 AL\n\n"
+                        f"🔥 Genel Güç: {_genel_guc}/100\n"
+                        f"🌍 Piyasa: {html.escape(_destek_etiket)}\n\n"
+                        f"<pre>{html.escape(_blok_ust)}</pre>\n"
+                        f"<pre>{html.escape(_blok_alt)}</pre>\n"
+                        f"{html.escape(neden_alarm)}📌 Neden ({toplam_neden_sayisi}/10): {html.escape(_neden_temiz)}\n"
                     )
 
-                    # Mesajı coin bazında hemen gönder; bir sonraki coin yeni Telegram mesajı olur.
+                    # Konsolda düz metin; Telegram'da hizalı monospace sütun.
+                    mesaj = (
+                        f"{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
+                        f"🔥 Genel Güç: {_genel_guc}/100\n"
+                        f"🌍 Piyasa: {_destek_etiket}\n\n"
+                        f"{_blok_ust}\n\n"
+                        f"{_blok_alt}\n\n"
+                        f"{neden_alarm}📌 Neden ({toplam_neden_sayisi}/10): {_neden_temiz}\n"
+                    )
                     print(mesaj)
-                    telegram_gonder(mesaj)
+                    telegram_gonder(mesaj_html, parse_mode="HTML")
                     # Gönderilmiş her AL için fiyat devamını izler; AL kararını değiştirmez.
                     bes_fiyat_teyit_baslat(a)
                     gonderilenler.append(a)
