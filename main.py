@@ -72,6 +72,36 @@ AL_OGRENME_SURESI = 3 * 60 * 60
 REJIM_RAPOR_ARALIGI = 24 * 60 * 60
 SON_REJIM_RAPOR_ZAMANI = time.time()
 
+# Assistant Kod Geliştirme Öneri Motoru
+# Son 7 günlük AL sonuçlarını mevcut dosya kuralları ve piyasa rejimiyle birlikte karşılaştırır; AL mantığını otomatik değiştirmez.
+# Telegram'da EKLE / GÜÇLENDİR / AZALT / ÇIKAR / REJİME GÖRE AYIR önerisi üretir.
+GELISTIRME_RAPOR_ARALIGI = 7 * 24 * 60 * 60
+GELISTIRME_PENCERE = 7 * 24 * 60 * 60
+GELISTIRME_MIN_KAYIT = 20
+GELISTIRME_MIN_GRUP = 5
+_GELISTIRME_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "assistant_gelistirme_meta.json")
+
+def _gelistirme_son_zaman_yukle():
+    try:
+        if os.path.exists(_GELISTIRME_META_DOSYA):
+            with open(_GELISTIRME_META_DOSYA, "r", encoding="utf-8") as f:
+                return float((json.load(f) or {}).get("son_rapor", 0) or 0)
+    except Exception:
+        pass
+    return 0.0
+
+def _gelistirme_son_zaman_kaydet(ts):
+    try:
+        klasor = os.path.dirname(os.path.abspath(_GELISTIRME_META_DOSYA))
+        if klasor:
+            os.makedirs(klasor, exist_ok=True)
+        with open(_GELISTIRME_META_DOSYA, "w", encoding="utf-8") as f:
+            json.dump({"son_rapor": float(ts)}, f)
+    except Exception as e:
+        print("Geliştirme rapor zamanı kaydedilemedi:", e)
+
+SON_GELISTIRME_RAPOR_ZAMANI = _gelistirme_son_zaman_yukle()
+
 
 
 
@@ -628,6 +658,23 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
         "coin_btc_60": round(float(aday.get("coin_btc_60", 0) or 0), 3),
         "coin_piyasa_60": round(float(aday.get("coin_piyasa_60", 0) or 0), 3),
+        # Kod geliştirme öneri motoru için AL anındaki ham özellikler.
+        "radar": round(float(aday.get("radar_skoru", 0) or 0), 3),
+        "hacim": round(float(aday.get("hacim", 0) or 0), 3),
+        "d1": round(float((aday.get("mikro") or {}).get("d1", 0) or 0), 3),
+        "d3": round(float((aday.get("mikro") or {}).get("d3", 0) or 0), 3),
+        "d5": round(float((aday.get("mikro") or {}).get("d5", 0) or 0), 3),
+        "d10": round(float((aday.get("mikro") or {}).get("d10", 0) or 0), 3),
+        "vr310": round(float((aday.get("mikro") or {}).get("vr310", 0) or 0), 3),
+        "stair5": bool((aday.get("mikro") or {}).get("stair5")),
+        "momentum_hizlaniyor": bool(aday.get("momentum_hizlaniyor")),
+        "hacim_hizlaniyor": bool(aday.get("hacim_hizlaniyor")),
+        "btc_farki_aciliyor": bool(aday.get("btc_farki_aciliyor")),
+        "lider_gucleniyor": bool(aday.get("lider_gucleniyor")),
+        "basamakli_trend": bool(aday.get("basamakli_trend") or (aday.get("mikro") or {}).get("basamak")),
+        "rsi": round(float(((aday.get("teknik") or {}).get("rsi", 0) or 0)), 3),
+        "adx": round(float(((aday.get("teknik") or {}).get("adx", 0) or 0)), 3),
+        "neden_metin": " | ".join(str(x) for x in (aday.get("nedenler") or [])),
     }
     AL_OGRENME_KAYITLARI.append(kayit)
     _al_ogrenme_kaydet()
@@ -776,6 +823,247 @@ def rejim_raporu_gerekirse_gonder():
     )
     print(mesaj)
     telegram_gonder(mesaj)
+
+
+def _basari_orani(kayitlar):
+    if not kayitlar:
+        return 0.0
+    return sum(1 for x in kayitlar if float(x.get("max_getiri", 0) or 0) >= 5.0) / len(kayitlar) * 100.0
+
+def _medyan_deger(kayitlar, alan):
+    vals = []
+    for x in kayitlar:
+        try:
+            v = x.get(alan)
+            if v is not None:
+                vals.append(float(v))
+        except Exception:
+            pass
+    return statistics.median(vals) if vals else None
+
+def _ozellik_var(k, anahtar):
+    """Özelliği önce doğrudan kayıttan, eski kayıtlar için metinden okur."""
+    dogrudan = {
+        "momentum hızlanıyor": "momentum_hizlaniyor",
+        "hacim hızlanıyor": "hacim_hizlaniyor",
+        "btc farkı açılıyor": "btc_farki_aciliyor",
+        "lider güçleniyor": "lider_gucleniyor",
+        "stair5": "basamakli_trend",
+    }
+    alan = dogrudan.get(anahtar)
+    if alan and alan in k:
+        return bool(k.get(alan))
+    metin = str(k.get("neden_metin", "") or "").lower()
+    if anahtar == "stair5":
+        return bool(k.get("stair5")) or "basamak" in metin
+    return anahtar.lower() in metin
+
+# Mevcut dosyadaki gerçek karar yapısının kısa özeti.
+# Öneri motoru istatistiği bu tabloyla birleştirir; böylece yalnız "özellik iyi" demek yerine
+# dosyada halihazırda kullanılıyor mu ve nasıl değiştirilmesi gerektiğini söyler.
+MEVCUT_KOD_KURALLARI = {
+    "Devam Gücü": (False, "AL kapısında doğrudan veto değil; destek/izleme bilgisi"),
+    "Kalıcılık": (False, "AL kapısında doğrudan kullanılmıyor"),
+    "Giriş skoru": (False, "AL kapısında doğrudan kullanılmıyor"),
+    "Erken skor": (False, "erken yakalama bilgisi; ana AL puanına doğrudan eşik değil"),
+    "Radar skoru": (True, "AI skorunda (Radar-55) katkısı ve Elit/Yıldız eşiklerinde aktif"),
+    "Hacim çarpanı": (False, "ana H karar kapısında doğrudan eşik değil"),
+    "1dk momentum": (True, "H karar motorunda deg1 ile puanlanıyor"),
+    "3dk momentum": (True, "H karar motorunda deg3 ile puanlanıyor; Yıldız istisnasında da aktif"),
+    "5dk momentum": (False, "ana H karar kapısında doğrudan kullanılmıyor"),
+    "10dk momentum": (False, "ana H karar kapısında doğrudan kullanılmıyor"),
+    "3dk hacim / 10dk ort": (False, "öğrenme/erken yapı bilgisi; ana AL kapısında doğrudan yok"),
+    "Coin-BTC 60dk göreceli güç": (False, "ölçüm/öncelik bilgisi; ana AL filtresi değil"),
+    "Coin-Piyasa 60dk göreceli güç": (False, "ölçüm/öncelik bilgisi; ana AL filtresi değil"),
+    "RSI": (True, "H karar motorunda aralık bazlı puan ve AL kapılarında eşik aktif"),
+    "ADX": (True, "H karar motorunun ana ayırıcılarından; AL kapılarında aktif"),
+    "BTC 3s": (False, "rejim/piyasa desteği bilgisi; ana AL kapısında doğrudan yok"),
+    "Piyasa 3s": (False, "rejim/piyasa desteği bilgisi; ana AL kapısında doğrudan yok"),
+    "Momentum hızlanıyor": (False, "Devam bilgisinde destekleyici; ana H AL kapısında zorunlu değil"),
+    "Hacim hızlanıyor": (False, "Devam bilgisinde destekleyici; ana H AL kapısında zorunlu değil"),
+    "BTC farkı açılıyor": (False, "mesaj/destek bilgisi; ana H AL kapısında zorunlu değil"),
+    "Lider güçleniyor": (False, "liderlik yapısına katkı var; tek başına AL şartı değil"),
+    "Basamaklı trend": (False, "mikro/erken yapıda destekleyici; ana H AL kapısında zorunlu değil"),
+}
+
+def _kod_durumu(ad):
+    aktif, aciklama = MEVCUT_KOD_KURALLARI.get(ad, (False, "mevcut karar motorunda özel eşik tanımlı değil"))
+    return aktif, aciklama
+
+def _eylem_sec(ad, fark, rejim=None):
+    aktif, _ = _kod_durumu(ad)
+    if fark > 0:
+        if aktif:
+            return "MEVCUT KURALI GÜÇLENDİR"
+        return "KODA EKLE / BONUS VER"
+    if aktif:
+        return "MEVCUT KURALI AZALT / ÇIKAR ADAYI"
+    return "NEGATİF BONUS / KAÇINMA KURALI DENE"
+
+def _guven_hesapla(fark, n):
+    return min(99, int(55 + abs(fark) * 1.35 + min(n, 100) * 0.18))
+
+def _sayisal_etki(kayitlar, alan):
+    vals=[]
+    for x in kayitlar:
+        try:
+            if x.get(alan) is not None:
+                vals.append(float(x.get(alan)))
+        except Exception:
+            pass
+    if len(vals) < GELISTIRME_MIN_KAYIT:
+        return None
+    esik=statistics.median(vals)
+    ust=[x for x in kayitlar if x.get(alan) is not None and float(x.get(alan)) >= esik]
+    alt=[x for x in kayitlar if x.get(alan) is not None and float(x.get(alan)) < esik]
+    if len(ust) < GELISTIRME_MIN_GRUP or len(alt) < GELISTIRME_MIN_GRUP:
+        return None
+    ru,ra=_basari_orani(ust),_basari_orani(alt)
+    return esik,ru,ra,ru-ra,len(ust),len(alt)
+
+def _bayrak_etki(kayitlar, anahtar):
+    var=[x for x in kayitlar if _ozellik_var(x,anahtar)]
+    yok=[x for x in kayitlar if not _ozellik_var(x,anahtar)]
+    if len(var) < GELISTIRME_MIN_GRUP or len(yok) < GELISTIRME_MIN_GRUP:
+        return None
+    rv,ry=_basari_orani(var),_basari_orani(yok)
+    return rv,ry,rv-ry,len(var),len(yok)
+
+def _gelistirme_onerileri_uret(kayitlar):
+    """+%5 sonucunu hem mevcut kod kurallarıyla hem piyasa rejimiyle birlikte yorumlar."""
+    if len(kayitlar) < GELISTIRME_MIN_KAYIT:
+        return []
+    oneriler=[]
+    sayisal=[
+        ("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
+        ("radar","Radar skoru"),("hacim","Hacim çarpanı"),("d1","1dk momentum"),("d3","3dk momentum"),
+        ("d5","5dk momentum"),("d10","10dk momentum"),("vr310","3dk hacim / 10dk ort"),
+        ("coin_btc_60","Coin-BTC 60dk göreceli güç"),("coin_piyasa_60","Coin-Piyasa 60dk göreceli güç"),
+        ("rsi","RSI"),("adx","ADX"),("btc_3s","BTC 3s"),("piyasa_medyan_3s","Piyasa 3s"),
+    ]
+    bayraklar=[
+        ("momentum hızlanıyor","Momentum hızlanıyor"),("hacim hızlanıyor","Hacim hızlanıyor"),
+        ("btc farkı açılıyor","BTC farkı açılıyor"),("lider güçleniyor","Lider güçleniyor"),("stair5","Basamaklı trend"),
+    ]
+
+    # 1) Tüm piyasa boyunca genel kod etkisi.
+    for alan,ad in sayisal:
+        etki=_sayisal_etki(kayitlar,alan)
+        if not etki:
+            continue
+        esik,ru,ra,fark,nu,na=etki
+        if abs(fark) < 12.0:
+            continue
+        aktif,kod_aciklama=_kod_durumu(ad)
+        oneriler.append({
+            "puan":abs(fark),"eylem":_eylem_sec(ad,fark),"ozellik":ad,"rejim":"TÜM PİYASA",
+            "aciklama":f"{ad} >= {esik:.2f} grubunda +%5 başarı %{ru:.1f}; altında %{ra:.1f} (n={nu}/{na}).",
+            "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(kayitlar))
+        })
+
+    for anahtar,ad in bayraklar:
+        etki=_bayrak_etki(kayitlar,anahtar)
+        if not etki:
+            continue
+        rv,ry,fark,nv,ny=etki
+        if abs(fark) < 12.0:
+            continue
+        _,kod_aciklama=_kod_durumu(ad)
+        oneriler.append({
+            "puan":abs(fark),"eylem":_eylem_sec(ad,fark),"ozellik":ad,"rejim":"TÜM PİYASA",
+            "aciklama":f"{ad} varken +%5 başarı %{rv:.1f}; yokken %{ry:.1f} (n={nv}/{ny}).",
+            "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(kayitlar))
+        })
+
+    # 2) Aynı özellik piyasa rejimine göre gerçekten değişiyor mu?
+    # Böylece güçlü/yatay/zayıf piyasa için ayrı kod önerisi üretilebilir.
+    for rejim in ("Güçlü","Yatay","Zayıf"):
+        grup=[x for x in kayitlar if x.get("piyasa_rejim") == rejim]
+        if len(grup) < max(GELISTIRME_MIN_KAYIT, GELISTIRME_MIN_GRUP*2):
+            continue
+        for alan,ad in sayisal:
+            etki=_sayisal_etki(grup,alan)
+            if not etki:
+                continue
+            esik,ru,ra,fark,nu,na=etki
+            if abs(fark) < 15.0:
+                continue
+            _,kod_aciklama=_kod_durumu(ad)
+            oneriler.append({
+                "puan":abs(fark)+4,"eylem":_eylem_sec(ad,fark,rejim),"ozellik":ad,"rejim":rejim.upper(),
+                "aciklama":f"{rejim} piyasada {ad} >= {esik:.2f}: +%5 başarı %{ru:.1f}; altında %{ra:.1f} (n={nu}/{na}). Bu değişikliği yalnız {rejim.lower()} rejimde uygula.",
+                "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(grup))
+            })
+        for anahtar,ad in bayraklar:
+            etki=_bayrak_etki(grup,anahtar)
+            if not etki:
+                continue
+            rv,ry,fark,nv,ny=etki
+            if abs(fark) < 15.0:
+                continue
+            _,kod_aciklama=_kod_durumu(ad)
+            oneriler.append({
+                "puan":abs(fark)+4,"eylem":_eylem_sec(ad,fark,rejim),"ozellik":ad,"rejim":rejim.upper(),
+                "aciklama":f"{rejim} piyasada {ad} varken +%5 başarı %{rv:.1f}; yokken %{ry:.1f} (n={nv}/{ny}). Bu değişikliği yalnız {rejim.lower()} rejimde uygula.",
+                "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(grup))
+            })
+
+    # 3) Rejimin kendisi büyük fark yaratıyorsa kodda rejim ağırlığı öner.
+    rejimler={r:[x for x in kayitlar if x.get("piyasa_rejim")==r] for r in ("Güçlü","Yatay","Zayıf")}
+    yeterli={r:g for r,g in rejimler.items() if len(g) >= GELISTIRME_MIN_GRUP}
+    if len(yeterli) >= 2:
+        oranlar={r:_basari_orani(g) for r,g in yeterli.items()}
+        en_iyi=max(oranlar,key=oranlar.get); en_kotu=min(oranlar,key=oranlar.get)
+        fark=oranlar[en_iyi]-oranlar[en_kotu]
+        if fark >= 12:
+            oneriler.append({
+                "puan":fark+6,"eylem":"REJİME GÖRE KODU AYIR","ozellik":"Piyasa rejimi","rejim":"ORTAK",
+                "aciklama":f"{en_iyi} piyasada +%5 başarı %{oranlar[en_iyi]:.1f}, {en_kotu} piyasada %{oranlar[en_kotu]:.1f}. Aynı AL eşiğini her rejimde kullanma; önce bonus/eksi puan olarak dene.",
+                "kod":"Mevcut dosyada piyasa desteği mesajlanıyor; ana H AL kapısına doğrudan rejim ağırlığı bağlı değil.",
+                "guven":_guven_hesapla(fark,len(kayitlar))
+            })
+
+    # En güçlü, tekrarsız 5 geliştirme önerisini seç.
+    oneriler.sort(key=lambda x:(x.get("puan",0),x.get("guven",0)),reverse=True)
+    secilen=[]; gorulen=set()
+    for o in oneriler:
+        anahtar=(o.get("ozellik"),o.get("rejim"))
+        if anahtar in gorulen:
+            continue
+        gorulen.add(anahtar); secilen.append(o)
+        if len(secilen)>=5:
+            break
+    return secilen
+
+def gelistirme_oneri_raporu_gerekirse_gonder():
+    global SON_GELISTIRME_RAPOR_ZAMANI
+    simdi = time.time()
+    if SON_GELISTIRME_RAPOR_ZAMANI and simdi - SON_GELISTIRME_RAPOR_ZAMANI < GELISTIRME_RAPOR_ARALIGI:
+        return
+    son7 = [x for x in AL_OGRENME_KAYITLARI if x.get("tamamlandi") and float(x.get("tamamlanma_zamani", 0) or 0) > 0 and simdi - float(x.get("tamamlanma_zamani", 0) or 0) <= GELISTIRME_PENCERE]
+    if len(son7) < GELISTIRME_MIN_KAYIT:
+        return
+    oneriler = _gelistirme_onerileri_uret(son7)
+    if not oneriler:
+        mesaj = (
+            "🧠 ASSISTANT KOD + PİYASA GELİŞTİRME ÖNERİSİ\n\n"
+            "Bu hafta +%5 yapanlarla yapmayanlar arasında kodu değiştirecek kadar güçlü ve tekrarlı bir fark oluşmadı.\n"
+            "🟰 ÖNERİ: Mevcut kurallara dokunma; veri toplamaya devam et."
+        )
+    else:
+        satirlar = ["🧠 ASSISTANT KOD + PİYASA GELİŞTİRME ÖNERİSİ", ""]
+        for i, o in enumerate(oneriler, 1):
+            satirlar.append(f"{i}) {o['eylem']}: {o['ozellik']} [{o.get('rejim','TÜM PİYASA')}]")
+            satirlar.append(f"   Veri: {o['aciklama']}")
+            satirlar.append(f"   Dosyada: {o.get('kod','-')}")
+            satirlar.append(f"   Güven: %{o['guven']}")
+        satirlar.append("")
+        satirlar.append("Not: Motor mevcut Assistant kuralını + piyasa rejimini + +%5 sonuçlarını birlikte değerlendirir; kodu otomatik değiştirmez.")
+        mesaj = "\n".join(satirlar)
+    print(mesaj)
+    telegram_gonder(mesaj)
+    SON_GELISTIRME_RAPOR_ZAMANI = simdi
+    _gelistirme_son_zaman_kaydet(simdi)
 
 
 AL_OGRENME_KAYITLARI = _al_ogrenme_yukle()
@@ -1491,6 +1779,7 @@ while True:
         # Mevcut ticker cevabını öğrenme katmanında da kullan; ekstra API isteği yok.
         al_ogrenme_guncelle(ticker)
         rejim_raporu_gerekirse_gonder()
+        gelistirme_oneri_raporu_gerekirse_gonder()
 
         ticker_fiyat_haritasi = {}
         for _coin in ticker:
@@ -2263,16 +2552,82 @@ while True:
                             f"BTC 3s %{_btc3_anlik:+.2f} | Piyasa 3s %{_piyasa3_anlik:+.2f}"
                         )
 
+                    # Neden kısmında zaten özellik paragrafında gösterilen tekrarları temizle.
+                    _neden_parcalari = [p.strip() for p in str(neden).split(" • ") if p.strip()]
+                    _tekrar_baslangiclari = (
+                        "EMA trendi", "RSI ", "MACD ", "Radar Yıldız"
+                    )
+                    _neden_temiz = " • ".join(
+                        p for p in _neden_parcalari
+                        if not p.startswith(_tekrar_baslangiclari)
+                    )
+                    if not _neden_temiz:
+                        _neden_temiz = "Mevcut AL koşulları birlikte sağlandı."
+
+                    # Telefon ekranında daha okunaklı kompakt 2x2 düzen:
+                    # her satırda en fazla iki özellik, Neden bölümü ayrı paragraf.
+                    _d1 = mikro.get('d1', 0) if mikro else 0
+                    _d3 = mikro.get('d3', 0) if mikro else 0
+                    _d5 = mikro.get('d5', 0) if mikro else 0
+                    _d10 = mikro.get('d10', 0) if mikro else 0
+
+                    # Destek etiketi tek başına; BTC/Piyasa değerleri aşağıda 2'li satırda.
+                    if _btc3_anlik >= 1.0 and _piyasa3_anlik >= 1.0:
+                        _destek_etiket = "🟢 GÜÇLÜ"
+                    elif _btc3_anlik <= -1.0 or _piyasa3_anlik <= -1.0:
+                        _destek_etiket = "🔴 ZAYIF"
+                    else:
+                        _destek_etiket = "🟡 SINIRLI / YATAY"
+
+                    # İki ana sütun: solda Skorlar / sağda Piyasa; altta Momentum / Teknik.
+                    # Her sütunun kendi bilgileri alt alta kalır.
+                    _sol1 = [
+                        f"AI {a.get('ai_skoru', 0)}",
+                        f"Risk {risk}",
+                        f"Erken {a.get('erken_puan', 0)}",
+                        f"Giriş {a.get('giris_kalitesi', 0)}",
+                        f"Devam {a.get('devam_gucu', 0)}",
+                        f"Kalıcılık {a.get('kalicilik_skoru', 0)}",
+                        f"Öğrenme {a.get('ogrenme_uyum', 0)}",
+                    ]
+                    _sag1 = [
+                        f"Fiyat {round(a['fiyat'], 4)}",
+                        f"Hacim {a['hacim']}x",
+                        f"Radar {a['radar_skoru']}/100",
+                        f"BTC 3s %{_btc3_anlik:+.2f}",
+                        f"Piyasa 3s %{_piyasa3_anlik:+.2f}",
+                        f"Destek {_destek_etiket}",
+                    ]
+                    _sol2 = [
+                        f"1dk %{_d1}",
+                        f"3dk %{_d3}",
+                        f"5dk %{_d5}",
+                        f"10dk %{_d10}",
+                    ]
+                    _sag2 = [
+                        f"EMA {ema_yon}",
+                        f"RSI {teknik['rsi']}",
+                        f"ADX {teknik['adx']}",
+                        f"MACD {macd_yon}",
+                    ]
+
+                    def _iki_sutun_baslik_ve_satirlar(sol_baslik, sag_baslik, sol, sag, genislik=22):
+                        sat = [f"{sol_baslik:<{genislik}}{sag_baslik}"]
+                        n = max(len(sol), len(sag))
+                        for i in range(n):
+                            l = sol[i] if i < len(sol) else ""
+                            r = sag[i] if i < len(sag) else ""
+                            sat.append(f"{l:<{genislik}}{r}")
+                        return "\n".join(sat)
+
+                    _blok_ust = _iki_sutun_baslik_ve_satirlar("📊 SKORLAR", "📈 PİYASA", _sol1, _sag1)
+                    _blok_alt = _iki_sutun_baslik_ve_satirlar("⏱ MOMENTUM", "🧭 TEKNİK", _sol2, _sag2)
+
                     mesaj += (
                         f"{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
-                        f"AI {a.get('ai_skoru', 0)} | Risk {risk} | Erken {a.get('erken_puan', 0)} | "
-                        f"Giriş {a.get('giris_kalitesi', 0)} | Devam {a.get('devam_gucu', 0)} | "
-                        f"Kalıcılık {a.get('kalicilik_skoru', 0)} | Öğrenme {a.get('ogrenme_uyum', 0)}\n\n"
-                        f"Fiyat {round(a['fiyat'], 4)} | Hacim {a['hacim']}x | Radar {a['radar_skoru']}/100 | BTC 3s %{round(btc, 2)}\n"
-                        f"{mikro_satir}"
-                        f"EMA {ema_yon} | RSI {teknik['rsi']} | ADX {teknik['adx']} | MACD {macd_yon}\n\n"
-                        f"{piyasa_destek_satir}\n"
-                        f"{neden_alarm}Neden: {neden}\n\n"
+                        f"{_blok_ust}\n\n"
+                        f"{_blok_alt}\n\n"
+                        f"{neden_alarm}📌 Neden: {_neden_temiz}\n\n"
                     )
 
                     # Mesajı coin bazında hemen gönder; bir sonraki coin yeni Telegram mesajı olur.
