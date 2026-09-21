@@ -356,12 +356,14 @@ def bes_plus_benzerlik_skoru(aday):
     elif devam >= 60:
         skor += 7
 
-    if kal >= 98:
-        skor += 22; nedenler.append("Kalıcılık 98+")
+    # Kalıcılıkta "daha yüksek = daha iyi" varsayımını kaldır.
+    # 95+ bölgesi doygun/geç kalmış hareket ihtimali taşıdığı için ek ödül almaz.
+    if kal >= 95:
+        skor += 8; nedenler.append("Kalıcılık 95+ (doygunluk izle)")
     elif kal >= 90:
-        skor += 18; nedenler.append("Kalıcılık 90+")
+        skor += 16; nedenler.append("Kalıcılık 90-94")
     elif kal >= 88:
-        skor += 14; nedenler.append("Kalıcılık 88+")
+        skor += 13; nedenler.append("Kalıcılık 88-89")
 
     if rel >= 2:
         skor += 18; nedenler.append("60dk göreceli güç +2")
@@ -377,9 +379,11 @@ def bes_plus_benzerlik_skoru(aday):
     elif d3 > 0 and d5 > 0:
         skor += 6
 
-    # Davranışsal devam teyitleri; bunlar kazananlarda sık tekrar etti.
+    # Basamaklı trend artık tek başına pozitif bonus değildir.
+    # Son öğrenme sonuçlarında ayırıcı olmadığı / ters çalışabildiği görüldüğü için
+    # yalnız gözlem bilgisi olarak tutulur.
     if aday.get("basamakli_trend"):
-        skor += 8; nedenler.append("basamaklı trend")
+        nedenler.append("basamaklı trend")
     if aday.get("momentum_hizlaniyor"):
         skor += 6; nedenler.append("momentum hızlanıyor")
     if aday.get("btc_farki_aciliyor"):
@@ -463,7 +467,7 @@ def kalicilik_skoru_hesapla(aday):
     if aday.get("lider_gucleniyor"):
         skor += 4; nedenler.append("liderlik güçleniyor")
     if aday.get("basamakli_trend"):
-        skor += 6; nedenler.append("basamaklı yapı")
+        nedenler.append("basamaklı yapı")
 
     if btc_fark3 >= 2:
         skor += 7; nedenler.append("BTC'den belirgin güçlü")
@@ -476,8 +480,9 @@ def kalicilik_skoru_hesapla(aday):
         skor += 5
     if 0.5 <= d10m <= 5.5:
         skor += 4
+    # Mikro basamak da artık tek başına puan artırmaz.
     if m.get("basamak"):
-        skor += 4
+        pass
     if m.get("sisti") or d10m >= 7 or d5m >= 5:
         skor -= 12; nedenler.append("kısa vadede şişme riski")
     if d1 < -0.8 and d3m < 0:
@@ -514,6 +519,14 @@ def kalicilik_skoru_hesapla(aday):
         del hist[:-KALICILIK_GECMIS_UZUNLUK]
 
     skor = round(max(0, min(100, skor)), 1)
+
+    # Aşırı yüksek Kalıcılık geçmişte her zaman daha iyi devam anlamına gelmedi.
+    # 95+ olduğunda doygunluk/geç kalma riski için yumuşak ceza uygula.
+    # Bu sert veto değildir; yalnız bilgi skorunu yeniden kalibre eder.
+    if skor >= 95:
+        skor = round(max(0, skor - 8), 1)
+        nedenler.append("kalıcılık doygunluk cezası")
+
     if skor >= 80:
         etiket = "Uzun devam adayı"
     elif skor >= 68:
@@ -743,6 +756,8 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "piyasa_kalite": float(aday.get("genel_piyasa_kalite", 0) or 0),
         "neden_kalite": float(aday.get("genel_neden_kalite", 0) or 0),
         "neden_sayisi": int(aday.get("neden_sayisi", 0) or 0),
+        "onemli_neden_sayisi": int(aday.get("onemli_neden_sayisi", 0) or 0),
+        "neden_agirlikli_toplam": float(aday.get("neden_agirlikli_toplam", 0) or 0),
         "kategori": aday.get("radar_kategori", ""),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
@@ -1337,7 +1352,9 @@ def _gelistirme_onerileri_uret(kayitlar):
     oneriler=[]
     sayisal=[
         ("genel_guc","Genel Güç"),("skor_kalite","Genel Güç / Skor bloğu"),("momentum_kalite","Genel Güç / Momentum bloğu"),
-        ("piyasa_kalite","Genel Güç / Piyasa bloğu"),("neden_kalite","Genel Güç / Neden bloğu"),("neden_sayisi","Neden sayısı"),
+        ("piyasa_kalite","Genel Güç / Piyasa bloğu"),("neden_kalite","Genel Güç / Neden bloğu"),
+        ("neden_sayisi","Neden sayısı"),("onemli_neden_sayisi","Önemli neden sayısı"),
+        ("neden_agirlikli_toplam","Ağırlıklı neden puanı"),
         ("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
         ("radar","Radar skoru"),("hacim","Hacim çarpanı"),("d1","1dk momentum"),("d3","3dk momentum"),
         ("d5","5dk momentum"),("d10","10dk momentum"),("vr310","3dk hacim / 10dk ort"),
@@ -2809,7 +2826,6 @@ while True:
             [a for a in adaylar if a.get("guc_havuzu_adayi")],
             key=lambda x: (
                 x.get("dinamik_teyit_sayisi", 0),
-                1 if x.get("basamakli_trend") else 0,
                 x.get("genel_skor", 0),
                 x.get("radar_skoru", 0),
             ),
@@ -3062,17 +3078,100 @@ while True:
                             f"(BTC {a.get('coin_btc_60', 0):+.2f} / piyasa {a.get('coin_piyasa_60', 0):+.2f})"
                         )
 
-                    # Neden sayısı: teknik nedenler (en fazla 4) + hareket teyitleri
-                    # (en fazla 5) + 60dk göreceli güç nedeni (en fazla 1) = en fazla 10.
-                    # Bu sayaç yalnız mesaj bilgisidir; AL kararı/filtreleri değiştirmez.
+                    # NEDEN ÖNCELİĞİ V1
+                    # Ham neden sayısı korunur; fakat mesaj sırası ve Genel Güç içindeki
+                    # neden kalitesi "hangi neden" geldiğine göre ağırlıklandırılır.
+                    # Böylece EMA/MACD/basamak gibi benzer trend nedenleri puanı yapay şişirmez.
+                    def _neden_onem_puani(metin):
+                        s = str(metin or "").lower()
+
+                        # En ayırıcı / erken devam nedenleri
+                        if "60dk göreceli güç +2" in s:
+                            return 10
+                        if "momentum hızlanıyor" in s:
+                            return 9
+                        if "btc farkı açılıyor" in s:
+                            return 9
+                        if "lider güçleniyor" in s or "liderlik güçleniyor" in s:
+                            return 8
+                        if "adx" in s or "trend çok güçlü" in s:
+                            return 8
+                        if "hacim hızlanıyor" in s:
+                            return 7
+                        if "rsi sağlıklı" in s:
+                            return 7
+                        if "60dk göreceli güç +1" in s:
+                            return 6
+
+                        # Destekleyici ama tek başına güçlü ayrım sayılmayanlar
+                        if "macd pozitif" in s:
+                            return 4
+                        if "ema trendi yukarı" in s or "ema trendi korunuyor" in s:
+                            return 4
+                        if "radar yıldız" in s:
+                            return 4
+                        if "basamak" in s:
+                            return 2
+
+                        # Aşırı sıcak / doygunluk nedenleri pozitif kalite sayılmaz.
+                        if "aşırı" in s or "doygunluk" in s or "ısınıyor" in s:
+                            return 0
+                        return 3
+
+                    def _neden_parcalari_ve_sira(teknik_nedenler, hareketler, rel_bonus):
+                        parcalar = []
+
+                        # Göreceli güç tek parça ve yüksek öncelik.
+                        if rel_bonus:
+                            parcalar.append(
+                                f"60dk göreceli güç +{rel_bonus} "
+                                f"(BTC {a.get('coin_btc_60', 0):+.2f} / piyasa {a.get('coin_piyasa_60', 0):+.2f})"
+                            )
+
+                        # Hareket teyitlerini artık tek uzun cümlede saklamak yerine
+                        # öğrenme/önem hesabı için ayrı nedenler olarak ele al.
+                        for h in hareketler:
+                            parcalar.append(h)
+
+                        # Teknik nedenler
+                        for t in teknik_nedenler:
+                            parcalar.append(str(t))
+
+                        # Önemli olanlar önce.
+                        parcalar.sort(key=lambda x: _neden_onem_puani(x), reverse=True)
+                        return parcalar
+
+                    # Neden sayısı: teknik nedenler + hareket teyitleri + göreceli güç.
+                    # Ham toplam sayıyı koruyoruz; fakat "önemli neden" sayısını ayrıca hesaplıyoruz.
                     toplam_neden_sayisi = (
                         len(a.get("nedenler", []))
                         + len(hizlar)
                         + (1 if rel_bonus else 0)
                     )
-                    neden_alarm = "🚨 🚨 " if toplam_neden_sayisi >= 6 else ""
-                    # Teknik nedenleri artık kesme; farkları sonradan görebilmek için hepsini yaz.
-                    neden = " • ".join(nedenler)
+
+                    _neden_parcalari = _neden_parcalari_ve_sira(
+                        a.get("nedenler", []),
+                        hizlar,
+                        rel_bonus,
+                    )
+                    _neden_puanlari = [_neden_onem_puani(x) for x in _neden_parcalari]
+                    _onemli_nedenler = [
+                        x for x, p in zip(_neden_parcalari, _neden_puanlari)
+                        if p >= 7
+                    ]
+                    _onemli_neden_sayisi = len(_onemli_nedenler)
+
+                    # 10 adet ham nedenden ziyade ağırlıklı kalite:
+                    # teorik üst sınır 10 neden x 10 puan = 100.
+                    _neden_agirlikli_toplam = sum(_neden_puanlari)
+                    _neden_kalite_agirlikli = max(0.0, min(100.0, _neden_agirlikli_toplam))
+
+                    # Alarm önemli neden sayısına göre.
+                    neden_alarm = "🚨 🚨 " if _onemli_neden_sayisi >= 4 else ""
+
+                    # Telegram'da yalnız gerçekten önemli nedenleri göster.
+                    # Düşük öncelikli nedenler arka planda öğrenme/rapor için tutulmaya devam eder.
+                    neden = " • ".join(_onemli_nedenler)
 
                     mikro = a.get("mikro") or {}
                     mikro_satir = ""
@@ -3112,7 +3211,7 @@ while True:
                     # Nedenleri artık temizleyip düşürme: teknik nedenler dahil hepsi görünür.
                     # Böylece haftalık geliştirme analizinde hangi özelliklerin eşlik ettiği
                     # Telegram üzerinden de açıkça izlenebilir.
-                    _neden_temiz = neden or "Mevcut AL koşulları birlikte sağlandı."
+                    _neden_temiz = neden or "Belirgin önemli neden yok."
 
                     # Telefon ekranında daha okunaklı kompakt 2x2 düzen:
                     # her satırda en fazla iki özellik, Neden bölümü ayrı paragraf.
@@ -3137,11 +3236,15 @@ while True:
                         except Exception:
                             return 0.0
 
+                    _kal_raw = _clamp100(a.get('kalicilik_skoru', 0))
+                    # 95+ Kalıcılık artık "daha da güçlü" diye sınırsız ödüllendirilmez.
+                    _kal_genel = 82.0 if _kal_raw >= 95 else _kal_raw
+
                     _skor_kalite = sum([
                         _clamp100(a.get('ai_skoru', 0)),
                         _clamp100(a.get('giris_kalitesi', 0)),
                         _clamp100(a.get('devam_gucu', 0)),
-                        _clamp100(a.get('kalicilik_skoru', 0)),
+                        _kal_genel,
                     ]) / 4.0
 
                     # Yüzdesel momentumları ortak 0-100 ölçeğine taşı. 0%% yaklaşık nötr=50.
@@ -3161,7 +3264,7 @@ while True:
                     else:
                         _piyasa_kalite = 55.0
 
-                    _neden_kalite = _clamp100((toplam_neden_sayisi / 10.0) * 100.0)
+                    _neden_kalite = _clamp100(_neden_kalite_agirlikli)
                     _genel_guc = round(
                         0.30 * _skor_kalite +
                         0.25 * _momentum_kalite +
@@ -3175,6 +3278,8 @@ while True:
                     a["genel_piyasa_kalite"] = round(_piyasa_kalite, 2)
                     a["genel_neden_kalite"] = round(_neden_kalite, 2)
                     a["neden_sayisi"] = int(toplam_neden_sayisi)
+                    a["onemli_neden_sayisi"] = int(_onemli_neden_sayisi)
+                    a["neden_agirlikli_toplam"] = round(_neden_agirlikli_toplam, 2)
 
                     # İki ana sütun: solda Skorlar / sağda Piyasa; altta Momentum.
                     # Her sütunun kendi bilgileri alt alta kalır.
@@ -3234,7 +3339,7 @@ while True:
                         f"🌍 Piyasa: {html.escape(_destek_etiket)}\n\n"
                         f"<pre>{html.escape(_blok_ust)}</pre>\n"
                         f"<pre>{html.escape(_blok_alt)}</pre>\n"
-                        f"{html.escape(neden_alarm)}📌 Neden ({toplam_neden_sayisi}/10): {html.escape(_neden_temiz)}\n"
+                        f"{html.escape(neden_alarm)}📌 Önemli Neden ({_onemli_neden_sayisi}/7): {html.escape(_neden_temiz)}\n"
                     )
 
                     # Konsolda düz metin; Telegram'da hizalı monospace sütun.
@@ -3244,7 +3349,7 @@ while True:
                         f"🌍 Piyasa: {_destek_etiket}\n\n"
                         f"{_blok_ust}\n\n"
                         f"{_blok_alt}\n\n"
-                        f"{neden_alarm}📌 Neden ({toplam_neden_sayisi}/10): {_neden_temiz}\n"
+                        f"{neden_alarm}📌 Önemli Neden ({_onemli_neden_sayisi}/7): {_neden_temiz}\n"
                     )
                     print(mesaj)
                     telegram_gonder(mesaj_html, parse_mode="HTML")
