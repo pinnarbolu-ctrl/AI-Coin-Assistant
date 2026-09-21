@@ -80,7 +80,78 @@ GELISTIRME_RAPOR_ARALIGI = 7 * 24 * 60 * 60
 GELISTIRME_PENCERE = 7 * 24 * 60 * 60
 GELISTIRME_MIN_KAYIT = 20
 GELISTIRME_MIN_GRUP = 5
+
+# Geliştirme motoru V2:
+# - küçük örneklemde aşırı güven yazmaz
+# - tek gün/tek rejim sonucuyla "çıkar" demez
+# - aynı yöndeki sonucu günler ve rejimler arasında tekrar test eder
+# - korelasyon/puan şişmesi ve aşırı yüksek skor paradoksunu ayrıca arar
+# - önerilere öncelik verir; kodu otomatik değiştirmez
+GELISTIRME_MIN_GUN_GUCLU = 3
+GELISTIRME_MIN_REJIM_GUCLU = 2
+GELISTIRME_DUSUK_N = 20
+GELISTIRME_ORTA_N = 50
+GELISTIRME_YUKSEK_N = 100
+
 _GELISTIRME_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "assistant_gelistirme_meta.json")
+
+# 48 saatlik aynı-coin sinyal sırası.
+# İlk AL = 1️⃣, aynı coin 48 saat içinde tekrar AL verirse 2️⃣/3️⃣...
+# 48 saatten eski sinyaller yeni döngüye taşınmaz. Önceki sinyal +%5 gördüyse başlıkta belirtilir.
+SINYAL_SIRA_PENCERE = 48 * 60 * 60
+SINYAL_SIRA_DOSYA = os.path.join(_AL_DEFAULT_DIR, "assistant_sinyal_sira_48s.json")
+
+def _sinyal_sira_yukle():
+    try:
+        if os.path.exists(SINYAL_SIRA_DOSYA):
+            with open(SINYAL_SIRA_DOSYA, "r", encoding="utf-8") as f:
+                veri = json.load(f)
+                return veri if isinstance(veri, dict) else {}
+    except Exception as e:
+        print("Sinyal sıra dosyası okunamadı:", e)
+    return {}
+
+def _sinyal_sira_kaydet():
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(SINYAL_SIRA_DOSYA)), exist_ok=True)
+        with open(SINYAL_SIRA_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(SINYAL_SIRA_GECMISI, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("Sinyal sıra dosyası yazılamadı:", e)
+
+def _sinyal_sira_hazirla(symbol):
+    now = time.time()
+    gecmis = SINYAL_SIRA_GECMISI.get(symbol, [])
+    aktif = [x for x in gecmis if now - float(x.get("ts", 0) or 0) <= SINYAL_SIRA_PENCERE]
+    SINYAL_SIRA_GECMISI[symbol] = aktif
+    sira = len(aktif) + 1
+    onceki_5 = any(bool(x.get("hit5")) for x in aktif)
+    return sira, onceki_5
+
+def _sinyal_sira_ekle(symbol, fiyat):
+    now = time.time()
+    aktif = [x for x in SINYAL_SIRA_GECMISI.get(symbol, []) if now - float(x.get("ts", 0) or 0) <= SINYAL_SIRA_PENCERE]
+    event_id = f"{symbol}-{int(now*1000)}"
+    aktif.append({"id": event_id, "ts": now, "fiyat": float(fiyat or 0), "hit5": False})
+    SINYAL_SIRA_GECMISI[symbol] = aktif
+    _sinyal_sira_kaydet()
+    return event_id
+
+def _sinyal_sira_hit5_isaretle(symbol, event_id=None):
+    degisti = False
+    for x in reversed(SINYAL_SIRA_GECMISI.get(symbol, [])):
+        if event_id is None or x.get("id") == event_id:
+            if not x.get("hit5"):
+                x["hit5"] = True
+                degisti = True
+            break
+    if degisti:
+        _sinyal_sira_kaydet()
+
+def _sira_etiketi(n):
+    return f"{int(n)}️⃣"
+
+SINYAL_SIRA_GECMISI = _sinyal_sira_yukle()
 
 def _gelistirme_son_zaman_yukle():
     try:
@@ -102,6 +173,14 @@ def _gelistirme_son_zaman_kaydet(ts):
         print("Geliştirme rapor zamanı kaydedilemedi:", e)
 
 SON_GELISTIRME_RAPOR_ZAMANI = _gelistirme_son_zaman_yukle()
+
+# Haftalık rapor başlangıcı:
+# Meta dosyası ilk kez yoksa deploy anını başlangıç kabul eder.
+# Böylece yeterli kayıt olsa bile ilk açılışta hemen rapor göndermez;
+# ilk rapor 7 gün sonra gelir. /data volume varsa tarih deploylarda korunur.
+if not SON_GELISTIRME_RAPOR_ZAMANI:
+    SON_GELISTIRME_RAPOR_ZAMANI = time.time()
+    _gelistirme_son_zaman_kaydet(SON_GELISTIRME_RAPOR_ZAMANI)
 
 
 
@@ -536,6 +615,7 @@ def al_takip_baslat(aday):
         "aktif": True,
         "giris": fiyat,
         "kar_bildirildi": False,
+        "sinyal_event_id": aday.get("_sinyal_event_id"),
     }
 
 
@@ -573,6 +653,7 @@ def al_takip_guncelle(ticker):
 
         if getiri >= KAR_BILDIR_ESIK:
             p["kar_bildirildi"] = True
+            _sinyal_sira_hit5_isaretle(symbol, p.get("sinyal_event_id"))
             mesaj = (
                 f"💰 +%5 KÂR BÖLGESİ - {kalin_coin_yazisi(symbol[:-3] if symbol.endswith('TRY') else symbol)}\n"
                 f"İlk AL: {giris:.4f} | Güncel: {fiyat:.4f}\n"
@@ -910,8 +991,148 @@ def _eylem_sec(ad, fark, rejim=None):
         return "MEVCUT KURALI AZALT / ÇIKAR ADAYI"
     return "NEGATİF BONUS / KAÇINMA KURALI DENE"
 
-def _guven_hesapla(fark, n):
-    return min(99, int(55 + abs(fark) * 1.35 + min(n, 100) * 0.18))
+def _gun_anahtari(k):
+    try:
+        ts = float(k.get("tamamlanma_zamani", 0) or k.get("zaman", 0) or 0)
+        if ts <= 0:
+            return None
+        return time.strftime("%Y-%m-%d", time.localtime(ts))
+    except Exception:
+        return None
+
+def _yon_tekrari_sayisal(kayitlar, alan, genel_yon):
+    """Özelliğin aynı yönü kaç farklı günde ve piyasa rejiminde tekrar ettiğini sayar."""
+    gunler = {}
+    for x in kayitlar:
+        g = _gun_anahtari(x)
+        if not g:
+            continue
+        gunler.setdefault(g, []).append(x)
+
+    ayni_gun = 0
+    toplam_gun = 0
+    for _, grup in gunler.items():
+        e = _sayisal_etki(grup, alan)
+        if not e:
+            continue
+        toplam_gun += 1
+        fark = e[3]
+        if (genel_yon > 0 and fark > 0) or (genel_yon < 0 and fark < 0):
+            ayni_gun += 1
+
+    ayni_rejim = 0
+    toplam_rejim = 0
+    for rejim in ("Güçlü", "Yatay", "Zayıf"):
+        grup = [x for x in kayitlar if x.get("piyasa_rejim") == rejim]
+        e = _sayisal_etki(grup, alan)
+        if not e:
+            continue
+        toplam_rejim += 1
+        fark = e[3]
+        if (genel_yon > 0 and fark > 0) or (genel_yon < 0 and fark < 0):
+            ayni_rejim += 1
+
+    return ayni_gun, toplam_gun, ayni_rejim, toplam_rejim
+
+def _yon_tekrari_bayrak(kayitlar, anahtar, genel_yon):
+    gunler = {}
+    for x in kayitlar:
+        g = _gun_anahtari(x)
+        if not g:
+            continue
+        gunler.setdefault(g, []).append(x)
+
+    ayni_gun = 0
+    toplam_gun = 0
+    for _, grup in gunler.items():
+        e = _bayrak_etki(grup, anahtar)
+        if not e:
+            continue
+        toplam_gun += 1
+        fark = e[2]
+        if (genel_yon > 0 and fark > 0) or (genel_yon < 0 and fark < 0):
+            ayni_gun += 1
+
+    ayni_rejim = 0
+    toplam_rejim = 0
+    for rejim in ("Güçlü", "Yatay", "Zayıf"):
+        grup = [x for x in kayitlar if x.get("piyasa_rejim") == rejim]
+        e = _bayrak_etki(grup, anahtar)
+        if not e:
+            continue
+        toplam_rejim += 1
+        fark = e[2]
+        if (genel_yon > 0 and fark > 0) or (genel_yon < 0 and fark < 0):
+            ayni_rejim += 1
+
+    return ayni_gun, toplam_gun, ayni_rejim, toplam_rejim
+
+def _guven_hesapla(fark, n, ayni_gun=0, toplam_gun=0, ayni_rejim=0, toplam_rejim=0):
+    """Örneklem + etki + gün/rejim tekrarıyla temkinli güven seviyesi üretir."""
+    etki = abs(float(fark or 0))
+    puan = 0
+
+    if n >= GELISTIRME_YUKSEK_N:
+        puan += 3
+    elif n >= GELISTIRME_ORTA_N:
+        puan += 2
+    elif n >= GELISTIRME_DUSUK_N:
+        puan += 1
+
+    if etki >= 30:
+        puan += 2
+    elif etki >= 18:
+        puan += 1
+
+    if ayni_gun >= 5:
+        puan += 3
+    elif ayni_gun >= GELISTIRME_MIN_GUN_GUCLU:
+        puan += 2
+    elif ayni_gun >= 2:
+        puan += 1
+
+    if ayni_rejim >= GELISTIRME_MIN_REJIM_GUCLU:
+        puan += 2
+    elif ayni_rejim >= 1:
+        puan += 1
+
+    if n < 20:
+        seviye = "DÜŞÜK"
+    elif puan >= 7:
+        seviye = "ÇOK YÜKSEK"
+    elif puan >= 5:
+        seviye = "YÜKSEK"
+    elif puan >= 3:
+        seviye = "ORTA"
+    else:
+        seviye = "DÜŞÜK"
+
+    return {
+        "seviye": seviye,
+        "n": int(n),
+        "etki": round(etki, 1),
+        "ayni_gun": int(ayni_gun),
+        "toplam_gun": int(toplam_gun),
+        "ayni_rejim": int(ayni_rejim),
+        "toplam_rejim": int(toplam_rejim),
+    }
+
+def _eylem_stabilize(eylem, fark, guven):
+    """Tek haftalık/küçük örneklem sonucu yüzünden agresif 'çıkar' önerisini engeller."""
+    guven_seviye = guven.get("seviye", "DÜŞÜK") if isinstance(guven, dict) else "DÜŞÜK"
+    gun = guven.get("ayni_gun", 0) if isinstance(guven, dict) else 0
+    rejim = guven.get("ayni_rejim", 0) if isinstance(guven, dict) else 0
+
+    tekrarlı = (gun >= GELISTIRME_MIN_GUN_GUCLU) or (rejim >= GELISTIRME_MIN_REJIM_GUCLU)
+    if fark < 0:
+        if not tekrarlı or guven_seviye in ("DÜŞÜK", "ORTA"):
+            return "AZALT / TEST ET"
+        if "ÇIKAR" in eylem:
+            return "AZALT / ÇIKAR ADAYI"
+    else:
+        if guven_seviye == "DÜŞÜK":
+            return "BONUSU TEST ET"
+    return eylem
 
 def _sayisal_etki(kayitlar, alan):
     vals=[]
@@ -1031,7 +1252,7 @@ def _puan_sismesi_onerileri(kayitlar):
                     "İki göstergenin ayrı ayrı tam puan vermesi yerine ortak grup puanı/tavanı dene; "
                     "sert veto yapma. Genel Güç ve AL kriterini otomatik değiştirme."
                 ),
-                "guven":_guven_hesapla(fark,len(yuksek)),
+                "guven":_guven_hesapla(fark,len(yuksek),0,0,0,0),
             })
 
     # Yüksek Genel Güç kendi başına başarısızları yeterince ayırmıyorsa ayrıca kalibrasyon uyarısı üret.
@@ -1044,11 +1265,69 @@ def _puan_sismesi_onerileri(kayitlar):
             "rejim":"TÜM PİYASA",
             "aciklama":f"Genel başarı %{genel:.1f}; Genel Güç 80+ başarı %{yuksek_oran:.1f} (n={len(yuksek)}). Yüksek puan beklenen ayrımı üretmiyor.",
             "kod":"Skor/Momentum/Piyasa/Neden ağırlıklarını haftalık sonuçlara göre yeniden tart; önce bilgi puanı olarak kalsın.",
-            "guven":_guven_hesapla(abs(yuksek_oran-genel),len(yuksek)),
+            "guven":_guven_hesapla(abs(yuksek_oran-genel),len(yuksek),0,0,0,0),
         })
 
-    adaylar.sort(key=lambda x:(x.get("puan",0),x.get("guven",0)),reverse=True)
+    adaylar.sort(key=lambda x:(x.get("puan",0), {"DÜŞÜK":0,"ORTA":1,"YÜKSEK":2,"ÇOK YÜKSEK":3}.get((x.get("guven") or {}).get("seviye","DÜŞÜK") if isinstance(x.get("guven"),dict) else "DÜŞÜK",0)),reverse=True)
     return adaylar[:3]
+
+
+
+def _asiri_yuksek_paradoks_onerileri(kayitlar):
+    """Çok yüksek görünen değerlerin geç kalmış/doygun hareket işareti olup olmadığını test eder."""
+    if len(kayitlar) < GELISTIRME_MIN_KAYIT:
+        return []
+
+    testler = [
+        ("kalicilik", "Kalıcılık", 95.0),
+        ("genel_guc", "Genel Güç", 80.0),
+        ("rsi", "RSI", 80.0),
+        ("adx", "ADX", 45.0),
+        ("devam", "Devam Gücü", 85.0),
+    ]
+    cikti = []
+    for alan, ad, esik in testler:
+        yuksek = []
+        alt = []
+        for x in kayitlar:
+            try:
+                v = float(x.get(alan, 0) or 0)
+            except Exception:
+                continue
+            (yuksek if v >= esik else alt).append(x)
+
+        if len(yuksek) < GELISTIRME_MIN_GRUP or len(alt) < GELISTIRME_MIN_GRUP:
+            continue
+
+        ry = _basari_orani(yuksek)
+        ra = _basari_orani(alt)
+        fark = ry - ra
+
+        # "çok yüksek" grup belirgin biçimde daha kötüyse olgunluk/geç kalmış hareket ihtimali.
+        if fark > -15.0:
+            continue
+
+        gun, tg, rej, tr = _yon_tekrari_sayisal(kayitlar, alan, -1)
+        guven = _guven_hesapla(fark, len(kayitlar), gun, tg, rej, tr)
+        eylem = _eylem_stabilize("AŞIRI YÜKSEK / GEÇ KALMIŞ HAREKET TESTİ", fark, guven)
+
+        cikti.append({
+            "puan": abs(fark) + 8,
+            "eylem": eylem,
+            "ozellik": f"{ad} {esik:g}+",
+            "rejim": "TÜM PİYASA",
+            "aciklama": (
+                f"{ad} >= {esik:g} grubunda +%5 başarı %{ry:.1f}; altında %{ra:.1f} "
+                f"(n={len(yuksek)}/{len(alt)}). Çok yüksek değer 'daha güçlü' yerine "
+                f"hareketin olgunlaştığı/geç kalındığı bölgeyi temsil ediyor olabilir."
+            ),
+            "kod": (
+                "Sert veto yapma. Önce bu bölgeye doygunluk/geç-kalma eksi puanı veya tavan puanı dene; "
+                "sonucu farklı gün ve rejimlerde tekrar doğrula."
+            ),
+            "guven": guven,
+        })
+    return cikti
 
 
 def _gelistirme_onerileri_uret(kayitlar):
@@ -1079,10 +1358,13 @@ def _gelistirme_onerileri_uret(kayitlar):
         if abs(fark) < 12.0:
             continue
         aktif,kod_aciklama=_kod_durumu(ad)
+        gun,tg,rej,tr = _yon_tekrari_sayisal(kayitlar, alan, fark)
+        guven = _guven_hesapla(fark, len(kayitlar), gun, tg, rej, tr)
+        eylem = _eylem_stabilize(_eylem_sec(ad,fark), fark, guven)
         oneriler.append({
-            "puan":abs(fark),"eylem":_eylem_sec(ad,fark),"ozellik":ad,"rejim":"TÜM PİYASA",
+            "puan":abs(fark),"eylem":eylem,"ozellik":ad,"rejim":"TÜM PİYASA",
             "aciklama":f"{ad} >= {esik:.2f} grubunda +%5 başarı %{ru:.1f}; altında %{ra:.1f} (n={nu}/{na}).",
-            "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(kayitlar))
+            "kod":kod_aciklama,"guven":guven
         })
 
     for anahtar,ad in bayraklar:
@@ -1093,10 +1375,13 @@ def _gelistirme_onerileri_uret(kayitlar):
         if abs(fark) < 12.0:
             continue
         _,kod_aciklama=_kod_durumu(ad)
+        gun,tg,rej,tr = _yon_tekrari_bayrak(kayitlar, anahtar, fark)
+        guven = _guven_hesapla(fark, len(kayitlar), gun, tg, rej, tr)
+        eylem = _eylem_stabilize(_eylem_sec(ad,fark), fark, guven)
         oneriler.append({
-            "puan":abs(fark),"eylem":_eylem_sec(ad,fark),"ozellik":ad,"rejim":"TÜM PİYASA",
+            "puan":abs(fark),"eylem":eylem,"ozellik":ad,"rejim":"TÜM PİYASA",
             "aciklama":f"{ad} varken +%5 başarı %{rv:.1f}; yokken %{ry:.1f} (n={nv}/{ny}).",
-            "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(kayitlar))
+            "kod":kod_aciklama,"guven":guven
         })
 
     # 2) Aynı özellik piyasa rejimine göre gerçekten değişiyor mu?
@@ -1116,7 +1401,7 @@ def _gelistirme_onerileri_uret(kayitlar):
             oneriler.append({
                 "puan":abs(fark)+4,"eylem":_eylem_sec(ad,fark,rejim),"ozellik":ad,"rejim":rejim.upper(),
                 "aciklama":f"{rejim} piyasada {ad} >= {esik:.2f}: +%5 başarı %{ru:.1f}; altında %{ra:.1f} (n={nu}/{na}). Bu değişikliği yalnız {rejim.lower()} rejimde uygula.",
-                "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(grup))
+                "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(grup),0,0,1,1)
             })
         for anahtar,ad in bayraklar:
             etki=_bayrak_etki(grup,anahtar)
@@ -1129,7 +1414,7 @@ def _gelistirme_onerileri_uret(kayitlar):
             oneriler.append({
                 "puan":abs(fark)+4,"eylem":_eylem_sec(ad,fark,rejim),"ozellik":ad,"rejim":rejim.upper(),
                 "aciklama":f"{rejim} piyasada {ad} varken +%5 başarı %{rv:.1f}; yokken %{ry:.1f} (n={nv}/{ny}). Bu değişikliği yalnız {rejim.lower()} rejimde uygula.",
-                "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(grup))
+                "kod":kod_aciklama,"guven":_guven_hesapla(fark,len(grup),0,0,1,1)
             })
 
     # 3) Rejimin kendisi büyük fark yaratıyorsa kodda rejim ağırlığı öner.
@@ -1144,15 +1429,26 @@ def _gelistirme_onerileri_uret(kayitlar):
                 "puan":fark+6,"eylem":"REJİME GÖRE KODU AYIR","ozellik":"Piyasa rejimi","rejim":"ORTAK",
                 "aciklama":f"{en_iyi} piyasada +%5 başarı %{oranlar[en_iyi]:.1f}, {en_kotu} piyasada %{oranlar[en_kotu]:.1f}. Aynı AL eşiğini her rejimde kullanma; önce bonus/eksi puan olarak dene.",
                 "kod":"Mevcut dosyada piyasa desteği mesajlanıyor; ana H AL kapısına doğrudan rejim ağırlığı bağlı değil.",
-                "guven":_guven_hesapla(fark,len(kayitlar))
+                "guven":_guven_hesapla(fark,len(kayitlar),0,0,len(yeterli),len(yeterli))
             })
 
     # 4) Yüksek görünen ama +%5 yapmayan sinyallerde puan şişmesi/korelasyon analizi.
     # Aynı yükselişi birden fazla gösterge tekrar ödüllüyorsa "grup/tavan puanı" önerisi üretir.
     oneriler.extend(_puan_sismesi_onerileri(kayitlar))
 
+    # 5) Aşırı yüksek skorların "daha güçlü" değil, geç/doygun hareket işareti olduğu paradoksları ara.
+    oneriler.extend(_asiri_yuksek_paradoks_onerileri(kayitlar))
+
+    # Güven ve tekrar sayısını öncelik puanına da yansıt.
+    for o in oneriler:
+        g = o.get("guven") or {}
+        seviye = g.get("seviye", "DÜŞÜK") if isinstance(g, dict) else "DÜŞÜK"
+        bonus = {"DÜŞÜK": 0, "ORTA": 4, "YÜKSEK": 9, "ÇOK YÜKSEK": 14}.get(seviye, 0)
+        tekrar_bonus = 2 * int(g.get("ayni_gun", 0) or 0) + 3 * int(g.get("ayni_rejim", 0) or 0) if isinstance(g, dict) else 0
+        o["puan"] = float(o.get("puan", 0) or 0) + bonus + min(10, tekrar_bonus)
+
     # En güçlü, tekrarsız 5 geliştirme önerisini seç.
-    oneriler.sort(key=lambda x:(x.get("puan",0),x.get("guven",0)),reverse=True)
+    oneriler.sort(key=lambda x:(x.get("puan",0), {"DÜŞÜK":0,"ORTA":1,"YÜKSEK":2,"ÇOK YÜKSEK":3}.get((x.get("guven") or {}).get("seviye","DÜŞÜK") if isinstance(x.get("guven"),dict) else "DÜŞÜK",0)),reverse=True)
     secilen=[]; gorulen=set()
     for o in oneriler:
         anahtar=(o.get("ozellik"),o.get("rejim"))
@@ -1163,6 +1459,108 @@ def _gelistirme_onerileri_uret(kayitlar):
             break
     return secilen
 
+
+def _mesaj_gelistirme_onerileri(kayitlar, kod_onerileri):
+    """
+    Haftalık veriye göre Telegram mesajının hangi alanlarının öne çıkarılması,
+    geri plana alınması veya birleştirilmesi gerektiğini önerir.
+    Mesaj formatını otomatik değiştirmez; yalnız öneri üretir.
+    """
+    if len(kayitlar) < GELISTIRME_MIN_KAYIT:
+        return []
+
+    gorunen = {
+        "Genel Güç", "Devam Gücü", "Kalıcılık", "Giriş skoru", "Erken skor",
+        "Radar skoru", "Hacim çarpanı", "1dk momentum", "3dk momentum",
+        "5dk momentum", "10dk momentum", "BTC 3s", "Piyasa 3s", "Neden sayısı",
+        "Genel Güç / Skor bloğu", "Genel Güç / Momentum bloğu",
+        "Genel Güç / Piyasa bloğu", "Genel Güç / Neden bloğu",
+    }
+
+    # Kod önerilerinden mesaj tarafına anlamlı olanları dönüştür.
+    adaylar = []
+    for o in kod_onerileri:
+        ad = o.get("ozellik", "")
+        if not ad:
+            continue
+        g = o.get("guven") or {}
+        seviye = g.get("seviye", "DÜŞÜK") if isinstance(g, dict) else "DÜŞÜK"
+        eylem = str(o.get("eylem", ""))
+        puan = float(o.get("puan", 0) or 0)
+
+        # Mesajda zaten görünen ve pozitif ayıran verileri öne çıkar.
+        pozitif = not any(k in eylem for k in ("AZALT", "ÇIKAR", "NEGATİF", "KAÇINMA"))
+        if ad in gorunen and pozitif and seviye in ("ORTA", "YÜKSEK", "ÇOK YÜKSEK"):
+            adaylar.append({
+                "puan": puan + 8,
+                "eylem": "MESAJDA ÖNE ÇIKAR",
+                "ozellik": ad,
+                "neden": f"+%5 yapanlarla yapmayanları ayırmada anlamlı görünüyor; güven {seviye}.",
+                "onerilen": "Mesajın üst bölümünde veya ilk bakışta görülen alanda tut."
+            })
+
+        # Negatif/yararsız görünen ama mesajda yer kaplayan alanı ikinci plana al.
+        if ad in gorunen and not pozitif:
+            if seviye in ("YÜKSEK", "ÇOK YÜKSEK"):
+                etiket = "MESAJDAN KALDIR ADAYI"
+                onerilen = "Ana mesajdan çıkarıp yalnız detay/öğrenme verisinde tutmayı test et."
+            else:
+                etiket = "MESAJDA İKİNCİ PLANA AL"
+                onerilen = "Şimdilik kaldırma; alt satıra veya daha az görünür alana taşı."
+            adaylar.append({
+                "puan": puan + 5,
+                "eylem": etiket,
+                "ozellik": ad,
+                "neden": f"Yüksek görünmesi +%5 başarısını artırmıyor veya ters ilişki gösteriyor; güven {seviye}.",
+                "onerilen": onerilen
+            })
+
+    # Teknik trend göstergeleri birbirini çok tekrar ediyorsa tek mesaj özetine dönüştürme önerisi.
+    teknik_alanlar = [("rsi","RSI"), ("adx","ADX")]
+    mevcut = []
+    for alan, ad in teknik_alanlar:
+        e = _sayisal_etki(kayitlar, alan)
+        if e:
+            mevcut.append((alan, ad, e))
+
+    # EMA/MACD neden bloğunda zaten görüldüğü için trend özetini ayrıca önerebiliriz.
+    if len(mevcut) >= 2:
+        adaylar.append({
+            "puan": 18,
+            "eylem": "MESAJDA BİRLEŞTİR",
+            "ozellik": "Trend teknikleri",
+            "neden": "RSI / ADX ile EMA-MACD aynı trend gücünü kısmen tekrar ediyor; mesaj kalabalığını azaltabilir.",
+            "onerilen": "Tek tek tekrar etmek yerine gerektiğinde 'Trend Gücü: Güçlü / Orta / Zayıf' özeti göster; ham değerleri öğrenmede tut."
+        })
+
+    # Genel Güç yüksekken sonuçlar kötüleşiyorsa, mesajda tek başına karar işareti gibi görünmemesini öner.
+    e = _sayisal_etki(kayitlar, "genel_guc")
+    if e:
+        esik, ru, ra, fark, nu, na = e
+        if fark <= -12:
+            adaylar.append({
+                "puan": abs(fark) + 20,
+                "eylem": "MESAJDA UYARIYLA GÖSTER",
+                "ozellik": "Genel Güç",
+                "neden": f"Genel Güç >= {esik:.0f} grubunda +%5 başarı %{ru:.1f}, altında %{ra:.1f}; tek başına kalite etiketi gibi okunmamalı.",
+                "onerilen": "Genel Güç kalsın ama karar verdiren ana işaret gibi büyütme; geliştirme motoru yeniden kalibre edene kadar destek metriği olarak göster."
+            })
+
+    # Tekrarsız en fazla 4 mesaj önerisi.
+    adaylar.sort(key=lambda x: x.get("puan", 0), reverse=True)
+    sonuc = []
+    gorulen = set()
+    for x in adaylar:
+        k = (x.get("eylem"), x.get("ozellik"))
+        if k in gorulen:
+            continue
+        gorulen.add(k)
+        sonuc.append(x)
+        if len(sonuc) >= 4:
+            break
+    return sonuc
+
+
 def gelistirme_oneri_raporu_gerekirse_gonder():
     global SON_GELISTIRME_RAPOR_ZAMANI
     simdi = time.time()
@@ -1172,21 +1570,43 @@ def gelistirme_oneri_raporu_gerekirse_gonder():
     if len(son7) < GELISTIRME_MIN_KAYIT:
         return
     oneriler = _gelistirme_onerileri_uret(son7)
+    mesaj_onerileri = _mesaj_gelistirme_onerileri(son7, oneriler)
     if not oneriler:
-        mesaj = (
-            "🧠 ASSISTANT KOD + PİYASA GELİŞTİRME ÖNERİSİ\n\n"
-            "Bu hafta +%5 yapanlarla yapmayanlar arasında kodu değiştirecek kadar güçlü ve tekrarlı bir fark oluşmadı.\n"
-            "🟰 ÖNERİ: Mevcut kurallara dokunma; veri toplamaya devam et."
-        )
+        satirlar = [
+            "🧠 ASSISTANT HAFTALIK KOD + PİYASA GELİŞTİRME ÖNERİSİ",
+            "",
+            "Bu hafta +%5 yapanlarla yapmayanlar arasında kodu değiştirecek kadar güçlü ve tekrarlı bir fark oluşmadı.",
+            "🟰 KOD ÖNERİSİ: Mevcut kurallara dokunma; veri toplamaya devam et.",
+        ]
+        if mesaj_onerileri:
+            satirlar.extend(["", "💬 MESAJ GELİŞTİRME ÖNERİSİ", ""])
+            for i, m in enumerate(mesaj_onerileri, 1):
+                satirlar.append(f"{i}) {m['eylem']}: {m['ozellik']}")
+                satirlar.append(f"   Neden: {m['neden']}")
+                satirlar.append(f"   Öneri: {m['onerilen']}")
+        mesaj = "\n".join(satirlar)
     else:
-        satirlar = ["🧠 ASSISTANT KOD + PİYASA GELİŞTİRME ÖNERİSİ", ""]
+        satirlar = ["🧠 ASSISTANT HAFTALIK KOD + PİYASA GELİŞTİRME ÖNERİSİ", ""]
         for i, o in enumerate(oneriler, 1):
-            satirlar.append(f"{i}) {o['eylem']}: {o['ozellik']} [{o.get('rejim','TÜM PİYASA')}]")
+            g = o.get("guven") or {}
+            seviye = g.get("seviye", "DÜŞÜK") if isinstance(g, dict) else str(g)
+            tekrar = ""
+            if isinstance(g, dict):
+                tekrar = f" | n={g.get('n',0)} | aynı yön gün {g.get('ayni_gun',0)}/{g.get('toplam_gun',0)} | rejim {g.get('ayni_rejim',0)}/{g.get('toplam_rejim',0)}"
+            satirlar.append(f"Öncelik {i}) {o['eylem']}: {o['ozellik']} [{o.get('rejim','TÜM PİYASA')}]")
             satirlar.append(f"   Veri: {o['aciklama']}")
             satirlar.append(f"   Dosyada: {o.get('kod','-')}")
-            satirlar.append(f"   Güven: %{o['guven']}")
+            satirlar.append(f"   Güven: {seviye}{tekrar}")
+        if mesaj_onerileri:
+            satirlar.append("")
+            satirlar.append("💬 MESAJ GELİŞTİRME ÖNERİSİ")
+            satirlar.append("")
+            for i, m in enumerate(mesaj_onerileri, 1):
+                satirlar.append(f"{i}) {m['eylem']}: {m['ozellik']}")
+                satirlar.append(f"   Neden: {m['neden']}")
+                satirlar.append(f"   Öneri: {m['onerilen']}")
         satirlar.append("")
-        satirlar.append("Not: Motor mevcut Assistant kuralını + piyasa rejimini + +%5 sonuçlarını birlikte değerlendirir; ayrıca yüksek puanlı başarısız sinyallerde korelasyon/puan şişmesini arar. Kodu otomatik değiştirmez.")
+        satirlar.append("Not: Motor mevcut Assistant kuralını + piyasa rejimini + +%5 sonuçlarını birlikte değerlendirir; küçük örneklemde agresif 'çıkar' demez, aynı yönü gün/rejim bazında tekrar test eder, yüksek puanlı başarısız sinyallerde korelasyon/puan şişmesi ve geç/doygun hareket paradoksunu arar. Ayrıca Telegram mesajında hangi verinin öne çıkarılması, geri plana alınması veya birleştirilmesi gerektiğini önerir. Kodu ve mesaj formatını otomatik değiştirmez.")
         mesaj = "\n".join(satirlar)
     print(mesaj)
     telegram_gonder(mesaj)
@@ -2800,10 +3220,16 @@ while True:
                     # Alt bölüm artık yalnız momentumdur; Teknik tekrarları Neden kısmındadır.
                     _blok_alt = "⏱ MOMENTUM\n" + "\n".join(_sol2)
 
+                    # Aynı coin 48 saat içinde yeniden AL verirse sıra numarası devam eder.
+                    # 48 saatten eski geçmiş yeni döngü sayılır ve tekrar 1️⃣ başlar.
+                    _sinyal_sira, _onceki_5 = _sinyal_sira_hazirla(a.get("symbol", ""))
+                    _sira_prefix = _sira_etiketi(_sinyal_sira)
+                    _onceki_5_etiket = " | Önceki +%5 ✅" if _onceki_5 else ""
+
                     # Yalnız bu AL mesajı HTML olarak gönderilir. Dinamik alanlar escape edilir.
                     # Böylece <pre> bloğunda iki sütun gerçekten düz görünür; diğer Telegram mesajlarına dokunulmaz.
                     mesaj_html = (
-                        f"{html.escape(kalin_coin_yazisi(gorunen_coin))} | {html.escape(str(a.get('radar_kategori', '')))} + 🟢 AL\n\n"
+                        f"{html.escape(_sira_prefix)} {html.escape(kalin_coin_yazisi(gorunen_coin))} | {html.escape(str(a.get('radar_kategori', '')))} + 🟢 AL{html.escape(_onceki_5_etiket)}\n\n"
                         f"🔥 Genel Güç: {_genel_guc}/100\n"
                         f"🌍 Piyasa: {html.escape(_destek_etiket)}\n\n"
                         f"<pre>{html.escape(_blok_ust)}</pre>\n"
@@ -2813,7 +3239,7 @@ while True:
 
                     # Konsolda düz metin; Telegram'da hizalı monospace sütun.
                     mesaj = (
-                        f"{kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL\n\n"
+                        f"{_sira_prefix} {kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{_onceki_5_etiket}\n\n"
                         f"🔥 Genel Güç: {_genel_guc}/100\n"
                         f"🌍 Piyasa: {_destek_etiket}\n\n"
                         f"{_blok_ust}\n\n"
@@ -2822,6 +3248,8 @@ while True:
                     )
                     print(mesaj)
                     telegram_gonder(mesaj_html, parse_mode="HTML")
+                    # Mesaj gönderildikten sonra sıra olayını kalıcı kayda al.
+                    a["_sinyal_event_id"] = _sinyal_sira_ekle(a.get("symbol", ""), a.get("fiyat", 0))
                     # Gönderilmiş her AL için fiyat devamını izler; AL kararını değiştirmez.
                     bes_fiyat_teyit_baslat(a)
                     gonderilenler.append(a)
