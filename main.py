@@ -93,6 +93,8 @@ GELISTIRME_DUSUK_N = 20
 GELISTIRME_ORTA_N = 50
 GELISTIRME_YUKSEK_N = 100
 
+STRATEJI_SURUMU = "V7_DEVAM_REL_KALICILIK"
+
 _GELISTIRME_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "assistant_gelistirme_meta.json")
 
 # 48 saatlik aynı-coin sinyal sırası.
@@ -758,6 +760,12 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "neden_sayisi": int(aday.get("neden_sayisi", 0) or 0),
         "onemli_neden_sayisi": int(aday.get("onemli_neden_sayisi", 0) or 0),
         "neden_agirlikli_toplam": float(aday.get("neden_agirlikli_toplam", 0) or 0),
+        "strateji_surumu": STRATEJI_SURUMU,
+        "genel_devam_bilesen": float(aday.get("genel_devam_bilesen", 0) or 0),
+        "genel_rel_bilesen": float(aday.get("genel_rel_bilesen", 0) or 0),
+        "genel_kalicilik_bant": float(aday.get("genel_kalicilik_bant", 0) or 0),
+        "genel_hareket_bilesen": float(aday.get("genel_hareket_bilesen", 0) or 0),
+        "genel_adx_bilesen": float(aday.get("genel_adx_bilesen", 0) or 0),
         "kategori": aday.get("radar_kategori", ""),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
@@ -1355,6 +1363,11 @@ def _gelistirme_onerileri_uret(kayitlar):
         ("piyasa_kalite","Genel Güç / Piyasa bloğu"),("neden_kalite","Genel Güç / Neden bloğu"),
         ("neden_sayisi","Neden sayısı"),("onemli_neden_sayisi","Önemli neden sayısı"),
         ("neden_agirlikli_toplam","Ağırlıklı neden puanı"),
+        ("genel_devam_bilesen","Genel Güç / Devam bileşeni"),
+        ("genel_rel_bilesen","Genel Güç / Göreceli güç bileşeni"),
+        ("genel_kalicilik_bant","Genel Güç / Kalıcılık bant bileşeni"),
+        ("genel_hareket_bilesen","Genel Güç / Hareket teyidi bileşeni"),
+        ("genel_adx_bilesen","Genel Güç / ADX bileşeni"),
         ("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
         ("radar","Radar skoru"),("hacim","Hacim çarpanı"),("d1","1dk momentum"),("d3","3dk momentum"),
         ("d5","5dk momentum"),("d10","10dk momentum"),("vr310","3dk hacim / 10dk ort"),
@@ -1583,7 +1596,13 @@ def gelistirme_oneri_raporu_gerekirse_gonder():
     simdi = time.time()
     if SON_GELISTIRME_RAPOR_ZAMANI and simdi - SON_GELISTIRME_RAPOR_ZAMANI < GELISTIRME_RAPOR_ARALIGI:
         return
-    son7 = [x for x in AL_OGRENME_KAYITLARI if x.get("tamamlandi") and float(x.get("tamamlanma_zamani", 0) or 0) > 0 and simdi - float(x.get("tamamlanma_zamani", 0) or 0) <= GELISTIRME_PENCERE]
+    son7_tumu = [x for x in AL_OGRENME_KAYITLARI if x.get("tamamlandi") and float(x.get("tamamlanma_zamani", 0) or 0) > 0 and simdi - float(x.get("tamamlanma_zamani", 0) or 0) <= GELISTIRME_PENCERE]
+
+    # Eski veriyi silme; ama yeterli V7 örneği birikince haftalık öneriyi
+    # yalnız mevcut strateji sürümünden üret. Böylece kod değişikliği raporu bozmaz.
+    son7_mevcut = [x for x in son7_tumu if x.get("strateji_surumu") == STRATEJI_SURUMU]
+    son7 = son7_mevcut if len(son7_mevcut) >= GELISTIRME_MIN_KAYIT else son7_tumu
+
     if len(son7) < GELISTIRME_MIN_KAYIT:
         return
     oneriler = _gelistirme_onerileri_uret(son7)
@@ -3265,11 +3284,42 @@ while True:
                         _piyasa_kalite = 55.0
 
                     _neden_kalite = _clamp100(_neden_kalite_agirlikli)
+
+                    # GENEL GÜÇ V2
+                    # Öncelik: Devam > 60dk göreceli güç > sağlıklı Kalıcılık bandı >
+                    # hareket teyitleri > ADX > neden kalabalığı.
+                    _devam_g = _clamp100(a.get("devam_gucu", 0))
+                    _rel_bonus_val = float(rel_bonus or 0)
+                    _rel_guc = 100.0 if _rel_bonus_val >= 2 else (65.0 if _rel_bonus_val == 1 else 25.0)
+
+                    _kal_raw2 = _clamp100(a.get("kalicilik_skoru", 0))
+                    if 88 <= _kal_raw2 <= 94:
+                        _kal_bant = 100.0
+                    elif 84 <= _kal_raw2 < 88:
+                        _kal_bant = 75.0
+                    elif 95 <= _kal_raw2 <= 97:
+                        _kal_bant = 55.0
+                    elif _kal_raw2 > 97:
+                        _kal_bant = 35.0
+                    else:
+                        _kal_bant = 50.0
+
+                    _hareket_teyit_sayisi = len(hizlar)
+                    _hareket_guc = min(100.0, _hareket_teyit_sayisi * 20.0)
+                    try:
+                        _adx_val = float(a.get("adx", 0) or 0)
+                    except Exception:
+                        _adx_val = 0.0
+                    _adx_guc = min(100.0, max(0.0, (_adx_val - 20.0) * 4.0))
+
+                    # Neden adedi artık ana sürücü değil; destekleyici %10.
                     _genel_guc = round(
-                        0.30 * _skor_kalite +
-                        0.25 * _momentum_kalite +
-                        0.20 * _piyasa_kalite +
-                        0.25 * _neden_kalite
+                        0.30 * _devam_g +
+                        0.20 * _rel_guc +
+                        0.18 * _kal_bant +
+                        0.12 * _hareket_guc +
+                        0.10 * _adx_guc +
+                        0.10 * _neden_kalite
                     )
                     a["genel_guc_skoru"] = int(_genel_guc)
                     # Haftalık geliştirme motoru yalnız toplamı değil, puanı hangi blokların şişirdiğini de görsün.
@@ -3277,6 +3327,11 @@ while True:
                     a["genel_momentum_kalite"] = round(_momentum_kalite, 2)
                     a["genel_piyasa_kalite"] = round(_piyasa_kalite, 2)
                     a["genel_neden_kalite"] = round(_neden_kalite, 2)
+                    a["genel_devam_bilesen"] = round(_devam_g, 2)
+                    a["genel_rel_bilesen"] = round(_rel_guc, 2)
+                    a["genel_kalicilik_bant"] = round(_kal_bant, 2)
+                    a["genel_hareket_bilesen"] = round(_hareket_guc, 2)
+                    a["genel_adx_bilesen"] = round(_adx_guc, 2)
                     a["neden_sayisi"] = int(toplam_neden_sayisi)
                     a["onemli_neden_sayisi"] = int(_onemli_neden_sayisi)
                     a["neden_agirlikli_toplam"] = round(_neden_agirlikli_toplam, 2)
