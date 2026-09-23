@@ -767,6 +767,7 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "genel_hareket_bilesen": float(aday.get("genel_hareket_bilesen", 0) or 0),
         "genel_adx_bilesen": float(aday.get("genel_adx_bilesen", 0) or 0),
         "al_odak_puani": float(aday.get("al_odak_puani", 0) or 0),
+        "btc_sok_puani": float(aday.get("btc_sok_puani", 0) or 0),
         "kategori": aday.get("radar_kategori", ""),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
@@ -1370,6 +1371,7 @@ def _gelistirme_onerileri_uret(kayitlar):
         ("genel_hareket_bilesen","Genel Güç / Hareket teyidi bileşeni"),
         ("genel_adx_bilesen","Genel Güç / ADX bileşeni"),
         ("al_odak_puani","AL Gücü / Ana odak puanı"),
+        ("btc_sok_puani","BTC Şok / Piyasa baskı puanı"),
         ("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
         ("radar","Radar skoru"),("hacim","Hacim çarpanı"),("d1","1dk momentum"),("d3","3dk momentum"),
         ("d5","5dk momentum"),("d10","10dk momentum"),("vr310","3dk hacim / 10dk ort"),
@@ -3338,17 +3340,60 @@ while True:
                     a["onemli_neden_sayisi"] = int(_onemli_neden_sayisi)
                     a["neden_agirlikli_toplam"] = round(_neden_agirlikli_toplam, 2)
 
+                    # BTC ŞOK KORUMASI V1
+                    # Amaç: BTC'de ani aşağı hızlanma + piyasa zayıflaması varken
+                    # coin ne kadar güçlü görünürse görünsün AL gücünün yapay yüksek kalmasını önlemek.
+                    # Sert veto değildir; yalnız AL Gücü puanına dinamik ceza ve görünür uyarı ekler.
+                    try:
+                        _btc3 = float(a.get("btc_3s", 0) or 0)
+                    except Exception:
+                        _btc3 = 0.0
+                    try:
+                        _piyasa3 = float(a.get("piyasa_3s", 0) or 0)
+                    except Exception:
+                        _piyasa3 = 0.0
+
+                    # Kademeli şok skoru:
+                    # BTC ve piyasa aynı anda negatife hızlanıyorsa ceza büyür.
+                    _btc_sok_puani = 0
+                    if _btc3 <= -0.20:
+                        _btc_sok_puani += 10
+                    if _btc3 <= -0.40:
+                        _btc_sok_puani += 10
+                    if _btc3 <= -0.70:
+                        _btc_sok_puani += 10
+                    if _piyasa3 <= -0.25:
+                        _btc_sok_puani += 8
+                    if _piyasa3 <= -0.50:
+                        _btc_sok_puani += 7
+
+                    # BTC-piyasa birlikte aşağıysa ekstra risk.
+                    if _btc3 < 0 and _piyasa3 < 0:
+                        _btc_sok_puani += 5
+
+                    _btc_sok_puani = min(40, _btc_sok_puani)
+
+                    if _btc_sok_puani >= 30:
+                        _btc_sok_etiket = "🚨 BTC ŞOKU"
+                    elif _btc_sok_puani >= 18:
+                        _btc_sok_etiket = "⚠️ BTC ZAYIFLAMA"
+                    elif _btc_sok_puani >= 8:
+                        _btc_sok_etiket = "🟡 BTC BASKISI"
+                    else:
+                        _btc_sok_etiket = ""
+
                     # AL ODAĞI V1
                     # Mesajın en üstünde görünen ana kalite özeti.
                     # Neden adedi ve Genel Güç'ten bağımsızdır; videolarda daha ayırıcı görünen
                     # Devam + 60dk göreceli güç + sağlıklı Kalıcılık bandı + hareket teyidi + ADX kullanılır.
-                    _al_odak_puani = round(max(0, min(100,
+                    _al_odak_ham = (
                         0.35 * _devam_g +
                         0.25 * _rel_guc +
                         0.20 * _kal_bant +
                         0.10 * _hareket_guc +
                         0.10 * _adx_guc
-                    )))
+                    )
+                    _al_odak_puani = round(max(0, min(100, _al_odak_ham - _btc_sok_puani)))
 
                     if _al_odak_puani >= 82:
                         _al_odak_etiket = "🚀 ÇOK GÜÇLÜ"
@@ -3361,6 +3406,8 @@ while True:
 
                     a["al_odak_puani"] = int(_al_odak_puani)
                     a["al_odak_etiket"] = _al_odak_etiket
+                    a["btc_sok_puani"] = int(_btc_sok_puani)
+                    a["btc_sok_etiket"] = _btc_sok_etiket
 
                     # İki ana sütun: solda Skorlar / sağda Piyasa; altta Momentum.
                     # Her sütunun kendi bilgileri alt alta kalır.
@@ -3416,6 +3463,7 @@ while True:
                     # Böylece <pre> bloğunda iki sütun gerçekten düz görünür; diğer Telegram mesajlarına dokunulmaz.
                     mesaj_html = (
                         f"{html.escape(_sira_prefix)} {html.escape(kalin_coin_yazisi(gorunen_coin))} | {html.escape(str(a.get('radar_kategori', '')))} + 🟢 AL{html.escape(_onceki_5_etiket)}\n\n"
+                        f"{(html.escape(_btc_sok_etiket) + ' | ' + 'BTC 3s ' + format(_btc3, '+.2f') + '% | Piyasa 3s ' + format(_piyasa3, '+.2f') + '%' + chr(10)) if _btc_sok_etiket else ''}"
                         f"🎯 AL GÜCÜ: {_al_odak_puani}/100 | {html.escape(_al_odak_etiket)}\n"
                         f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)}\n"
                         f"🔥 Genel Güç: {_genel_guc}/100 | 🌍 Piyasa: {html.escape(_destek_etiket)}\n\n"
@@ -3427,6 +3475,7 @@ while True:
                     # Konsolda düz metin; Telegram'da hizalı monospace sütun.
                     mesaj = (
                         f"{_sira_prefix} {kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{_onceki_5_etiket}\n\n"
+                        f"{(_btc_sok_etiket + ' | BTC 3s ' + format(_btc3, '+.2f') + '% | Piyasa 3s ' + format(_piyasa3, '+.2f') + '%' + chr(10)) if _btc_sok_etiket else ''}"
                         f"🎯 AL GÜCÜ: {_al_odak_puani}/100 | {_al_odak_etiket}\n"
                         f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)}\n"
                         f"🔥 Genel Güç: {_genel_guc}/100 | 🌍 Piyasa: {_destek_etiket}\n\n"
