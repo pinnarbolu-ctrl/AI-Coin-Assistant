@@ -766,6 +766,7 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "genel_kalicilik_bant": float(aday.get("genel_kalicilik_bant", 0) or 0),
         "genel_hareket_bilesen": float(aday.get("genel_hareket_bilesen", 0) or 0),
         "genel_adx_bilesen": float(aday.get("genel_adx_bilesen", 0) or 0),
+        "al_odak_puani": float(aday.get("al_odak_puani", 0) or 0),
         "kategori": aday.get("radar_kategori", ""),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
@@ -1368,6 +1369,7 @@ def _gelistirme_onerileri_uret(kayitlar):
         ("genel_kalicilik_bant","Genel Güç / Kalıcılık bant bileşeni"),
         ("genel_hareket_bilesen","Genel Güç / Hareket teyidi bileşeni"),
         ("genel_adx_bilesen","Genel Güç / ADX bileşeni"),
+        ("al_odak_puani","AL Gücü / Ana odak puanı"),
         ("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
         ("radar","Radar skoru"),("hacim","Hacim çarpanı"),("d1","1dk momentum"),("d3","3dk momentum"),
         ("d5","5dk momentum"),("d10","10dk momentum"),("vr310","3dk hacim / 10dk ort"),
@@ -3336,6 +3338,30 @@ while True:
                     a["onemli_neden_sayisi"] = int(_onemli_neden_sayisi)
                     a["neden_agirlikli_toplam"] = round(_neden_agirlikli_toplam, 2)
 
+                    # AL ODAĞI V1
+                    # Mesajın en üstünde görünen ana kalite özeti.
+                    # Neden adedi ve Genel Güç'ten bağımsızdır; videolarda daha ayırıcı görünen
+                    # Devam + 60dk göreceli güç + sağlıklı Kalıcılık bandı + hareket teyidi + ADX kullanılır.
+                    _al_odak_puani = round(max(0, min(100,
+                        0.35 * _devam_g +
+                        0.25 * _rel_guc +
+                        0.20 * _kal_bant +
+                        0.10 * _hareket_guc +
+                        0.10 * _adx_guc
+                    )))
+
+                    if _al_odak_puani >= 82:
+                        _al_odak_etiket = "🚀 ÇOK GÜÇLÜ"
+                    elif _al_odak_puani >= 72:
+                        _al_odak_etiket = "🟢 GÜÇLÜ"
+                    elif _al_odak_puani >= 62:
+                        _al_odak_etiket = "✅ UYGUN"
+                    else:
+                        _al_odak_etiket = "🟡 TEMKİNLİ"
+
+                    a["al_odak_puani"] = int(_al_odak_puani)
+                    a["al_odak_etiket"] = _al_odak_etiket
+
                     # İki ana sütun: solda Skorlar / sağda Piyasa; altta Momentum.
                     # Her sütunun kendi bilgileri alt alta kalır.
                     _sol1 = [
@@ -3390,8 +3416,9 @@ while True:
                     # Böylece <pre> bloğunda iki sütun gerçekten düz görünür; diğer Telegram mesajlarına dokunulmaz.
                     mesaj_html = (
                         f"{html.escape(_sira_prefix)} {html.escape(kalin_coin_yazisi(gorunen_coin))} | {html.escape(str(a.get('radar_kategori', '')))} + 🟢 AL{html.escape(_onceki_5_etiket)}\n\n"
-                        f"🔥 Genel Güç: {_genel_guc}/100\n"
-                        f"🌍 Piyasa: {html.escape(_destek_etiket)}\n\n"
+                        f"🎯 AL GÜCÜ: {_al_odak_puani}/100 | {html.escape(_al_odak_etiket)}\n"
+                        f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)}\n"
+                        f"🔥 Genel Güç: {_genel_guc}/100 | 🌍 Piyasa: {html.escape(_destek_etiket)}\n\n"
                         f"<pre>{html.escape(_blok_ust)}</pre>\n"
                         f"<pre>{html.escape(_blok_alt)}</pre>\n"
                         f"{html.escape(neden_alarm)}📌 Önemli Neden ({_onemli_neden_sayisi}/7): {html.escape(_neden_temiz)}\n"
@@ -3400,8 +3427,9 @@ while True:
                     # Konsolda düz metin; Telegram'da hizalı monospace sütun.
                     mesaj = (
                         f"{_sira_prefix} {kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{_onceki_5_etiket}\n\n"
-                        f"🔥 Genel Güç: {_genel_guc}/100\n"
-                        f"🌍 Piyasa: {_destek_etiket}\n\n"
+                        f"🎯 AL GÜCÜ: {_al_odak_puani}/100 | {_al_odak_etiket}\n"
+                        f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)}\n"
+                        f"🔥 Genel Güç: {_genel_guc}/100 | 🌍 Piyasa: {_destek_etiket}\n\n"
                         f"{_blok_ust}\n\n"
                         f"{_blok_alt}\n\n"
                         f"{neden_alarm}📌 Önemli Neden ({_onemli_neden_sayisi}/7): {_neden_temiz}\n"
