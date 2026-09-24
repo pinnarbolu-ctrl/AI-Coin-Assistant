@@ -93,7 +93,10 @@ GELISTIRME_DUSUK_N = 20
 GELISTIRME_ORTA_N = 50
 GELISTIRME_YUKSEK_N = 100
 
-STRATEJI_SURUMU = "V7_DEVAM_REL_KALICILIK"
+STRATEJI_SURUMU = "V10_PIYASA_DEVAM_TEYIDI"
+
+_PIYASA_DEVAM_HAFIZA = []
+PIYASA_DEVAM_HAFIZA_SN = 180
 
 _GELISTIRME_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "assistant_gelistirme_meta.json")
 
@@ -768,6 +771,9 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "genel_adx_bilesen": float(aday.get("genel_adx_bilesen", 0) or 0),
         "al_odak_puani": float(aday.get("al_odak_puani", 0) or 0),
         "btc_sok_puani": float(aday.get("btc_sok_puani", 0) or 0),
+        "piyasa_devam_ceza": float(aday.get("piyasa_devam_ceza", 0) or 0),
+        "piyasa_geri_verme": float(aday.get("piyasa_geri_verme", 0) or 0),
+        "piyasa_pozitif_oran": float(aday.get("piyasa_pozitif_oran", 0) or 0),
         "kategori": aday.get("radar_kategori", ""),
         # 60dk göreceli güç bonusu AL filtresi değildir; yalnız ölçüm/öncelik bilgisidir.
         "goreceli_guc_bonus": int(aday.get("goreceli_guc_bonus", 0) or 0),
@@ -1372,6 +1378,9 @@ def _gelistirme_onerileri_uret(kayitlar):
         ("genel_adx_bilesen","Genel Güç / ADX bileşeni"),
         ("al_odak_puani","AL Gücü / Ana odak puanı"),
         ("btc_sok_puani","BTC Şok / Piyasa baskı puanı"),
+        ("piyasa_devam_ceza","Piyasa Devamı / Teyitsizlik cezası"),
+        ("piyasa_geri_verme","Piyasa geri verme"),
+        ("piyasa_pozitif_oran","Piyasa devam pozitif oranı"),
         ("devam","Devam Gücü"),("kalicilik","Kalıcılık"),("giris_skoru","Giriş skoru"),("erken","Erken skor"),
         ("radar","Radar skoru"),("hacim","Hacim çarpanı"),("d1","1dk momentum"),("d3","3dk momentum"),
         ("d5","5dk momentum"),("d10","10dk momentum"),("vr310","3dk hacim / 10dk ort"),
@@ -3340,6 +3349,94 @@ while True:
                     a["onemli_neden_sayisi"] = int(_onemli_neden_sayisi)
                     a["neden_agirlikli_toplam"] = round(_neden_agirlikli_toplam, 2)
 
+                    # PİYASA DEVAM TEYİDİ V1
+                    # Anlık pozitif görüntü yerine son ~60 saniyedeki devamlılığı ölçer.
+                    # Sert veto değildir; sahte kırılım/geri vermede AL Gücü'nden ceza düşer.
+                    def _piyasa_devam_hafiza_guncelle(btc3, piyasa3):
+                        simdi_local = time.time()
+                        try:
+                            _PIYASA_DEVAM_HAFIZA.append({
+                                "t": simdi_local,
+                                "btc3": float(btc3 or 0),
+                                "piyasa3": float(piyasa3 or 0),
+                            })
+                            alt_sinir = simdi_local - PIYASA_DEVAM_HAFIZA_SN
+                            _PIYASA_DEVAM_HAFIZA[:] = [
+                                x for x in _PIYASA_DEVAM_HAFIZA
+                                if float(x.get("t", 0) or 0) >= alt_sinir
+                            ]
+                        except Exception:
+                            pass
+
+                    def _piyasa_devam_analiz(btc3, piyasa3):
+                        _piyasa_devam_hafiza_guncelle(btc3, piyasa3)
+                        veri = list(_PIYASA_DEVAM_HAFIZA)
+                        if len(veri) < 3:
+                            return {
+                                "etiket": "⏳ İZLENİYOR",
+                                "ceza": 0,
+                                "teyit": False,
+                                "geri_verme": 0.0,
+                                "pozitif_oran": 0.0,
+                            }
+
+                        simdi_local = time.time()
+                        son60 = [x for x in veri if simdi_local - float(x.get("t", 0) or 0) <= 60]
+                        if len(son60) < 3:
+                            son60 = veri[-6:]
+
+                        btc_vals = [float(x.get("btc3", 0) or 0) for x in son60]
+                        piy_vals = [float(x.get("piyasa3", 0) or 0) for x in son60]
+
+                        pozitif = sum(1 for b, p in zip(btc_vals, piy_vals) if b > 0 and p > 0)
+                        pozitif_oran = pozitif / max(1, len(son60))
+
+                        btc_tepe = max(btc_vals)
+                        piy_tepe = max(piy_vals)
+                        btc_son = btc_vals[-1]
+                        piy_son = piy_vals[-1]
+
+                        btc_geri = max(0.0, btc_tepe - btc_son)
+                        piy_geri = max(0.0, piy_tepe - piy_son)
+                        geri_verme = max(btc_geri, piy_geri)
+
+                        teyit = (
+                            len(son60) >= 3
+                            and pozitif_oran >= 0.60
+                            and btc_son >= 0
+                            and piy_son >= 0
+                            and geri_verme < 0.35
+                        )
+
+                        ceza = 0
+                        if not teyit:
+                            ceza += 6
+                        if pozitif_oran < 0.50:
+                            ceza += 6
+                        if geri_verme >= 0.25:
+                            ceza += 6
+                        if geri_verme >= 0.45:
+                            ceza += 6
+                        if btc_son < 0 and piy_son < 0:
+                            ceza += 6
+
+                        ceza = min(24, ceza)
+
+                        if teyit:
+                            etiket = "✅ TEYİTLİ"
+                        elif geri_verme >= 0.45:
+                            etiket = "↩️ SAHTE KIRILIM"
+                        else:
+                            etiket = "⚠️ TEYİTSİZ"
+
+                        return {
+                            "etiket": etiket,
+                            "ceza": ceza,
+                            "teyit": teyit,
+                            "geri_verme": round(geri_verme, 2),
+                            "pozitif_oran": round(pozitif_oran, 2),
+                        }
+
                     # BTC ŞOK KORUMASI V1
                     # Amaç: BTC'de ani aşağı hızlanma + piyasa zayıflaması varken
                     # coin ne kadar güçlü görünürse görünsün AL gücünün yapay yüksek kalmasını önlemek.
@@ -3352,6 +3449,12 @@ while True:
                         _piyasa3 = float(a.get("piyasa_3s", 0) or 0)
                     except Exception:
                         _piyasa3 = 0.0
+
+                    _piyasa_devam = _piyasa_devam_analiz(_btc3, _piyasa3)
+                    _piyasa_devam_etiket = _piyasa_devam.get("etiket", "⏳ İZLENİYOR")
+                    _piyasa_devam_ceza = int(_piyasa_devam.get("ceza", 0) or 0)
+                    _piyasa_geri_verme = float(_piyasa_devam.get("geri_verme", 0) or 0)
+                    _piyasa_pozitif_oran = float(_piyasa_devam.get("pozitif_oran", 0) or 0)
 
                     # Kademeli şok skoru:
                     # BTC ve piyasa aynı anda negatife hızlanıyorsa ceza büyür.
@@ -3393,7 +3496,10 @@ while True:
                         0.10 * _hareket_guc +
                         0.10 * _adx_guc
                     )
-                    _al_odak_puani = round(max(0, min(100, _al_odak_ham - _btc_sok_puani)))
+                    _al_odak_puani = round(max(0, min(
+                        100,
+                        _al_odak_ham - _btc_sok_puani - _piyasa_devam_ceza
+                    )))
 
                     if _al_odak_puani >= 82:
                         _al_odak_etiket = "🚀 ÇOK GÜÇLÜ"
@@ -3408,6 +3514,10 @@ while True:
                     a["al_odak_etiket"] = _al_odak_etiket
                     a["btc_sok_puani"] = int(_btc_sok_puani)
                     a["btc_sok_etiket"] = _btc_sok_etiket
+                    a["piyasa_devam_ceza"] = int(_piyasa_devam_ceza)
+                    a["piyasa_devam_etiket"] = _piyasa_devam_etiket
+                    a["piyasa_geri_verme"] = float(_piyasa_geri_verme)
+                    a["piyasa_pozitif_oran"] = float(_piyasa_pozitif_oran)
 
                     # İki ana sütun: solda Skorlar / sağda Piyasa; altta Momentum.
                     # Her sütunun kendi bilgileri alt alta kalır.
@@ -3464,6 +3574,8 @@ while True:
                     mesaj_html = (
                         f"{html.escape(_sira_prefix)} {html.escape(kalin_coin_yazisi(gorunen_coin))} | {html.escape(str(a.get('radar_kategori', '')))} + 🟢 AL{html.escape(_onceki_5_etiket)}\n\n"
                         f"{(html.escape(_btc_sok_etiket) + ' | ' + 'BTC 3s ' + format(_btc3, '+.2f') + '% | Piyasa 3s ' + format(_piyasa3, '+.2f') + '%' + chr(10)) if _btc_sok_etiket else ''}"
+                        f"🌍 Piyasa Devamı: {html.escape(_piyasa_devam_etiket)}"
+                        f"{(' | Geri verme ' + format(_piyasa_geri_verme, '.2f') + '%') if _piyasa_geri_verme > 0 else ''}\n"
                         f"🎯 AL GÜCÜ: {_al_odak_puani}/100 | {html.escape(_al_odak_etiket)}\n"
                         f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)}\n"
                         f"🔥 Genel Güç: {_genel_guc}/100 | 🌍 Piyasa: {html.escape(_destek_etiket)}\n\n"
@@ -3476,6 +3588,8 @@ while True:
                     mesaj = (
                         f"{_sira_prefix} {kalin_coin_yazisi(gorunen_coin)} | {a.get('radar_kategori', '')} + 🟢 AL{_onceki_5_etiket}\n\n"
                         f"{(_btc_sok_etiket + ' | BTC 3s ' + format(_btc3, '+.2f') + '% | Piyasa 3s ' + format(_piyasa3, '+.2f') + '%' + chr(10)) if _btc_sok_etiket else ''}"
+                        f"🌍 Piyasa Devamı: {_piyasa_devam_etiket}"
+                        f"{(' | Geri verme ' + format(_piyasa_geri_verme, '.2f') + '%') if _piyasa_geri_verme > 0 else ''}\n"
                         f"🎯 AL GÜCÜ: {_al_odak_puani}/100 | {_al_odak_etiket}\n"
                         f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)}\n"
                         f"🔥 Genel Güç: {_genel_guc}/100 | 🌍 Piyasa: {_destek_etiket}\n\n"
