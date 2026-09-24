@@ -95,6 +95,81 @@ GELISTIRME_YUKSEK_N = 100
 
 STRATEJI_SURUMU = "V10_PIYASA_DEVAM_TEYIDI"
 
+# 24 saatlik +%5 yakalama başarı raporu
+YUZDE5_RAPOR_ARALIGI = 24 * 60 * 60
+YUZDE5_RAPOR_ETIKETI = "V10 Piyasa Devam"
+_YUZDE5_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "yuzde5_basariraporu_v10.json")
+
+def _yuzde5_meta_yukle():
+    try:
+        if os.path.exists(_YUZDE5_META_DOSYA):
+            with open(_YUZDE5_META_DOSYA, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                return d if isinstance(d, dict) else {}
+    except Exception as e:
+        print("+%5 rapor meta okunamadı:", e)
+    return {}
+
+def _yuzde5_meta_kaydet(meta):
+    try:
+        os.makedirs(os.path.dirname(_YUZDE5_META_DOSYA), exist_ok=True)
+        with open(_YUZDE5_META_DOSYA, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+    except Exception as e:
+        print("+%5 rapor meta yazılamadı:", e)
+
+_YUZDE5_META = _yuzde5_meta_yukle()
+if not _YUZDE5_META.get("baslangic"):
+    _YUZDE5_META["baslangic"] = time.time()
+    _YUZDE5_META["son_rapor"] = _YUZDE5_META["baslangic"]
+    _yuzde5_meta_kaydet(_YUZDE5_META)
+
+def yuzde5_basariraporu_gerekirse_gonder():
+    """Her 24 saatte yalnız bu strateji sürümünün +%5 yakalama oranını raporlar."""
+    global _YUZDE5_META
+    simdi = time.time()
+    son_rapor = float(_YUZDE5_META.get("son_rapor", _YUZDE5_META.get("baslangic", simdi)) or simdi)
+    if simdi - son_rapor < YUZDE5_RAPOR_ARALIGI:
+        return
+
+    pencere_bas = son_rapor
+    pencere_son = simdi
+
+    # Bu 24 saat içinde başlayan, bu strateji sürümüne ait sinyaller.
+    tum = [
+        x for x in AL_OGRENME_KAYITLARI
+        if x.get("strateji_surumu") == STRATEJI_SURUMU
+        and pencere_bas <= float(x.get("zaman", 0) or 0) < pencere_son
+    ]
+
+    tamam = [x for x in tum if x.get("tamamlandi")]
+    acik = [x for x in tum if not x.get("tamamlandi")]
+    basarili = [x for x in tamam if float(x.get("max_getiri", 0) or 0) >= 5.0]
+    basarisiz = [x for x in tamam if float(x.get("max_getiri", 0) or 0) < 5.0]
+
+    oran = (len(basarili) / len(tamam) * 100.0) if tamam else 0.0
+    ort_tepe = (
+        sum(float(x.get("max_getiri", 0) or 0) for x in tamam) / len(tamam)
+        if tamam else 0.0
+    )
+
+    mesaj = (
+        f"📊 24 SAATLİK +%5 YAKALAMA RAPORU — {YUZDE5_RAPOR_ETIKETI}\n\n"
+        f"Tamamlanan sinyal: {len(tamam)}\n"
+        f"+%5 yapan: {len(basarili)}\n"
+        f"+%5 yapamayan: {len(basarisiz)}\n"
+        f"🎯 +%5 başarı: %{oran:.1f}\n"
+        f"Ortalama tepe getiri: %{ort_tepe:+.2f}\n"
+        f"Henüz tamamlanmayan: {len(acik)}\n\n"
+        f"Not: Başarı = AL fiyatından sonra izleme süresi içinde en az +%5 tepe görmek."
+    )
+    print(mesaj)
+    telegram_gonder(mesaj)
+
+    _YUZDE5_META["son_rapor"] = simdi
+    _yuzde5_meta_kaydet(_YUZDE5_META)
+
+
 _PIYASA_DEVAM_HAFIZA = []
 PIYASA_DEVAM_HAFIZA_SN = 180
 
@@ -2380,6 +2455,7 @@ while True:
         al_ogrenme_guncelle(ticker)
         rejim_raporu_gerekirse_gonder()
         gelistirme_oneri_raporu_gerekirse_gonder()
+        yuzde5_basariraporu_gerekirse_gonder()
 
         ticker_fiyat_haritasi = {}
         for _coin in ticker:
