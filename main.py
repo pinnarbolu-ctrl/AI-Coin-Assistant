@@ -93,12 +93,12 @@ GELISTIRME_DUSUK_N = 20
 GELISTIRME_ORTA_N = 50
 GELISTIRME_YUKSEK_N = 100
 
-STRATEJI_SURUMU = "V10_PIYASA_DEVAM_TEYIDI"
+STRATEJI_SURUMU = "V12_HYBRID_S49_ASSISTANT"
 
 # 24 saatlik +%5 yakalama başarı raporu
-YUZDE5_RAPOR_ARALIGI = 24 * 60 * 60
-YUZDE5_RAPOR_ETIKETI = "V10 Piyasa Devam"
-_YUZDE5_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "yuzde5_basariraporu_v10.json")
+YUZDE5_RAPOR_ARALIGI = 7 * 24 * 60 * 60
+YUZDE5_RAPOR_ETIKETI = "V12 HYBRID — Assistant + Sinyal49"
+_YUZDE5_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "yuzde5_basariraporu_v11.json")
 
 def _yuzde5_meta_yukle():
     try:
@@ -125,7 +125,7 @@ if not _YUZDE5_META.get("baslangic"):
     _yuzde5_meta_kaydet(_YUZDE5_META)
 
 def yuzde5_basariraporu_gerekirse_gonder():
-    """Her 24 saatte yalnız bu strateji sürümünün +%5 yakalama oranını raporlar."""
+    """Her 7 günde V12 Hybrid'in +%5 başarısını ve yanlış sinyal oranını raporlar."""
     global _YUZDE5_META
     simdi = time.time()
     son_rapor = float(_YUZDE5_META.get("son_rapor", _YUZDE5_META.get("baslangic", simdi)) or simdi)
@@ -135,7 +135,6 @@ def yuzde5_basariraporu_gerekirse_gonder():
     pencere_bas = son_rapor
     pencere_son = simdi
 
-    # Bu 24 saat içinde başlayan, bu strateji sürümüne ait sinyaller.
     tum = [
         x for x in AL_OGRENME_KAYITLARI
         if x.get("strateji_surumu") == STRATEJI_SURUMU
@@ -144,24 +143,44 @@ def yuzde5_basariraporu_gerekirse_gonder():
 
     tamam = [x for x in tum if x.get("tamamlandi")]
     acik = [x for x in tum if not x.get("tamamlandi")]
-    basarili = [x for x in tamam if float(x.get("max_getiri", 0) or 0) >= 5.0]
-    basarisiz = [x for x in tamam if float(x.get("max_getiri", 0) or 0) < 5.0]
 
-    oran = (len(basarili) / len(tamam) * 100.0) if tamam else 0.0
+    basarili = [x for x in tamam if float(x.get("max_getiri", 0) or 0) >= 5.0]
+
+    # Yanlış sinyal:
+    # +%5 görmeden izleme süresinde en az -%2.5 ters hareket yapan sinyal.
+    yanlis = [
+        x for x in tamam
+        if float(x.get("max_getiri", 0) or 0) < 5.0
+        and float(x.get("min_getiri", 0) or 0) <= -2.5
+    ]
+
+    notr = [
+        x for x in tamam
+        if x not in basarili and x not in yanlis
+    ]
+
+    ham_oran = (len(basarili) / len(tamam) * 100.0) if tamam else 0.0
+    yanlis_oran = (len(yanlis) / len(tamam) * 100.0) if tamam else 0.0
+    net_taban = len(basarili) + len(yanlis)
+    net_kalite = (len(basarili) / net_taban * 100.0) if net_taban else 0.0
     ort_tepe = (
         sum(float(x.get("max_getiri", 0) or 0) for x in tamam) / len(tamam)
         if tamam else 0.0
     )
 
     mesaj = (
-        f"📊 24 SAATLİK +%5 YAKALAMA RAPORU — {YUZDE5_RAPOR_ETIKETI}\n\n"
+        f"📊 7 GÜNLÜK +%5 / YANLIŞ SİNYAL RAPORU — {YUZDE5_RAPOR_ETIKETI}\n\n"
         f"Tamamlanan sinyal: {len(tamam)}\n"
-        f"+%5 yapan: {len(basarili)}\n"
-        f"+%5 yapamayan: {len(basarisiz)}\n"
-        f"🎯 +%5 başarı: %{oran:.1f}\n"
-        f"Ortalama tepe getiri: %{ort_tepe:+.2f}\n"
-        f"Henüz tamamlanmayan: {len(acik)}\n\n"
-        f"Not: Başarı = AL fiyatından sonra izleme süresi içinde en az +%5 tepe görmek."
+        f"✅ +%5 yapan: {len(basarili)}\n"
+        f"❌ Yanlış sinyal (-%2.5): {len(yanlis)}\n"
+        f"➖ Nötr/yetersiz: {len(notr)}\n"
+        f"🎯 Ham +%5 başarı: %{ham_oran:.1f}\n"
+        f"⚠️ Yanlış sinyal oranı: %{yanlis_oran:.1f}\n"
+        f"🧠 Net sinyal kalitesi: %{net_kalite:.1f}\n"
+        f"📈 Ortalama tepe getiri: %{ort_tepe:+.2f}\n"
+        f"⏳ Henüz tamamlanmayan: {len(acik)}\n\n"
+        f"Başarı = izleme süresinde en az +%5 tepe. "
+        f"Yanlış = +%5 görmeden en az -%2.5 ters hareket."
     )
     print(mesaj)
     telegram_gonder(mesaj)
@@ -169,17 +188,6 @@ def yuzde5_basariraporu_gerekirse_gonder():
     _YUZDE5_META["son_rapor"] = simdi
     _yuzde5_meta_kaydet(_YUZDE5_META)
 
-
-_PIYASA_DEVAM_HAFIZA = []
-PIYASA_DEVAM_HAFIZA_SN = 180
-
-_GELISTIRME_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "assistant_gelistirme_meta.json")
-
-# 48 saatlik aynı-coin sinyal sırası.
-# İlk AL = 1️⃣, aynı coin 48 saat içinde tekrar AL verirse 2️⃣/3️⃣...
-# 48 saatten eski sinyaller yeni döngüye taşınmaz. Önceki sinyal +%5 gördüyse başlıkta belirtilir.
-SINYAL_SIRA_PENCERE = 48 * 60 * 60
-SINYAL_SIRA_DOSYA = os.path.join(_AL_DEFAULT_DIR, "assistant_sinyal_sira_48s.json")
 
 def _sinyal_sira_yukle():
     try:
@@ -845,6 +853,7 @@ def al_ogrenme_baslat(aday, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris):
         "genel_hareket_bilesen": float(aday.get("genel_hareket_bilesen", 0) or 0),
         "genel_adx_bilesen": float(aday.get("genel_adx_bilesen", 0) or 0),
         "al_odak_puani": float(aday.get("al_odak_puani", 0) or 0),
+        "erken_yakalama_puani": float(aday.get("erken_yakalama_puani", 0) or 0),
         "btc_sok_puani": float(aday.get("btc_sok_puani", 0) or 0),
         "piyasa_devam_ceza": float(aday.get("piyasa_devam_ceza", 0) or 0),
         "piyasa_geri_verme": float(aday.get("piyasa_geri_verme", 0) or 0),
@@ -1451,7 +1460,8 @@ def _gelistirme_onerileri_uret(kayitlar):
         ("genel_kalicilik_bant","Genel Güç / Kalıcılık bant bileşeni"),
         ("genel_hareket_bilesen","Genel Güç / Hareket teyidi bileşeni"),
         ("genel_adx_bilesen","Genel Güç / ADX bileşeni"),
-        ("al_odak_puani","AL Gücü / Ana odak puanı"),
+        ("erken_yakalama_puani","Erken Yakalama puanı"),
+        ("al_odak_puani","Devam Gücü / Ana odak puanı"),
         ("btc_sok_puani","BTC Şok / Piyasa baskı puanı"),
         ("piyasa_devam_ceza","Piyasa Devamı / Teyitsizlik cezası"),
         ("piyasa_geri_verme","Piyasa geri verme"),
@@ -2137,6 +2147,65 @@ def teknik_analiz_hesapla(symbol):
 # Radar ilk adayları bulur; bu katman teknik yapıyı AL / BEKLE / SAT-PAS kararına çevirir.
 # ==========================================
 
+def v12_hybrid_s49_kapisi(aday):
+    """
+    V12 HYBRID:
+    Assistant adayını tamamen değiştirmez; yalnız Telegram'a çıkacak gerçek AL'ı
+    Sinyal49'un devam-teyidi mantığındaki temel korumalarla ikinci kez süzer.
+
+    Amaç: daha az sinyal, daha yüksek +%5 isabeti.
+    Sert kurallar:
+      - mevcut Assistant zaten 🟢 AL demiş olmalı
+      - Risk Yüksek olmamalı
+      - Devam Gücü >= 60
+      - Assistant ana devam puanı >= 62
+      - ilk mikro 3dk ve 5dk birlikte sert negatif olmamalı
+      - BTC Şoku seviyesi çok yüksek olmamalı
+      - piyasa açıkça "SAHTE KIRILIM" göstermemeli
+      - en az bir gerçek hareket/göreceli güç teyidi olmalı
+    """
+    if "🟢 AL" not in str(aday.get("karar", "")):
+        return False, "Assistant AL değil"
+
+    risk = str(aday.get("risk", "") or "")
+    if "Yüksek" in risk:
+        return False, "Risk Yüksek"
+
+    devam = float(aday.get("devam_gucu", 0) or 0)
+    if devam < 60:
+        return False, f"Devam düşük ({devam:.1f})"
+
+    al_odak = float(aday.get("al_odak_puani", 0) or 0)
+    if al_odak < 62:
+        return False, f"Devam Gücü düşük ({al_odak:.0f})"
+
+    mikro = aday.get("mikro") or {}
+    d3 = float(mikro.get("d3", 0) or 0)
+    d5 = float(mikro.get("d5", 0) or 0)
+    if d3 <= -0.40 and d5 <= -0.40:
+        return False, f"3/5dk birlikte negatif ({d3:+.2f}/{d5:+.2f})"
+
+    btc_sok = int(aday.get("btc_sok_puani", 0) or 0)
+    if btc_sok >= 30:
+        return False, f"BTC Şoku ({btc_sok})"
+
+    piyasa_devam = str(aday.get("piyasa_devam_etiket", "") or "")
+    if "SAHTE KIRILIM" in piyasa_devam:
+        return False, "Piyasa sahte kırılım"
+
+    rel = int(aday.get("goreceli_guc_bonus", 0) or 0)
+    hareket_teyit = sum([
+        bool(aday.get("momentum_hizlaniyor")),
+        bool(aday.get("btc_farki_aciliyor")),
+        bool(aday.get("lider_gucleniyor")),
+        bool(aday.get("hacim_hizlaniyor")),
+    ])
+    if rel < 1 and hareket_teyit < 1:
+        return False, "Göreceli/hareket teyidi yok"
+
+    return True, "V12 Hybrid onay"
+
+
 def h_karar_hesapla(aday):
     """
     AI karar motoru V3 - bağımsız AL teyidi.
@@ -2425,7 +2494,7 @@ def h_karar_hesapla(aday):
 
 
 # Railway deploy / yeniden baslatma kontrolu: Telegram baglantisini aninda dogrula.
-telegram_gonder("✅ RADAR başladı ve aktif. Tarama başlıyor.")
+telegram_gonder("✅ V12 HYBRID başladı: Assistant + Sinyal49 seçici kapı aktif.")
 
 while True:
     try:
@@ -3561,6 +3630,53 @@ while True:
                     else:
                         _btc_sok_etiket = ""
 
+                    # ERKEN YAKALAMA V1
+                    # Eski Assistant'ın aday üretme hassasiyetini ayrı bir skor olarak korur.
+                    # Amaç: hareketin erken fark edilmesini ölçmek; devam kalitesiyle karıştırmamak.
+                    try:
+                        _erken_raw = float(a.get("erken_skor", a.get("erken_skoru", 0)) or 0)
+                    except Exception:
+                        _erken_raw = 0.0
+                    try:
+                        _giris_raw = float(a.get("giris_kalitesi", 0) or 0)
+                    except Exception:
+                        _giris_raw = 0.0
+                    try:
+                        _radar_raw = float(a.get("radar_skoru", 0) or 0)
+                    except Exception:
+                        _radar_raw = 0.0
+                    try:
+                        _hacim_raw = float(a.get("hacim_kat", a.get("hacim_kat_son", 0)) or 0)
+                    except Exception:
+                        _hacim_raw = 0.0
+
+                    # Hacim katkısı sınırlı; tek başına erken yakalama skorunu şişirmesin.
+                    _hacim_erken = max(0.0, min(100.0, (_hacim_raw / 3.0) * 100.0))
+
+                    # Mikro/erken kategori varsa küçük destek.
+                    _kat_text = str(a.get("radar_kategori", "") or "")
+                    _mikro_bonus = 100.0 if ("Mikro" in _kat_text or "Erken" in _kat_text) else 55.0
+
+                    _erken_yakalama_puani = round(max(0, min(100,
+                        0.35 * _erken_raw +
+                        0.30 * _giris_raw +
+                        0.20 * _radar_raw +
+                        0.10 * _hacim_erken +
+                        0.05 * _mikro_bonus
+                    )))
+
+                    if _erken_yakalama_puani >= 85:
+                        _erken_yakalama_etiket = "⚡ ÇOK ERKEN"
+                    elif _erken_yakalama_puani >= 72:
+                        _erken_yakalama_etiket = "🟢 ERKEN"
+                    elif _erken_yakalama_puani >= 60:
+                        _erken_yakalama_etiket = "✅ ZAMANINDA"
+                    else:
+                        _erken_yakalama_etiket = "🟡 GEÇ / ZAYIF"
+
+                    a["erken_yakalama_puani"] = int(_erken_yakalama_puani)
+                    a["erken_yakalama_etiket"] = _erken_yakalama_etiket
+
                     # AL ODAĞI V1
                     # Mesajın en üstünde görünen ana kalite özeti.
                     # Neden adedi ve Genel Güç'ten bağımsızdır; videolarda daha ayırıcı görünen
@@ -3652,7 +3768,8 @@ while True:
                         f"{(html.escape(_btc_sok_etiket) + ' | ' + 'BTC 3s ' + format(_btc3, '+.2f') + '% | Piyasa 3s ' + format(_piyasa3, '+.2f') + '%' + chr(10)) if _btc_sok_etiket else ''}"
                         f"🌍 Piyasa Devamı: {html.escape(_piyasa_devam_etiket)}"
                         f"{(' | Geri verme ' + format(_piyasa_geri_verme, '.2f') + '%') if _piyasa_geri_verme > 0 else ''}\n"
-                        f"🎯 AL GÜCÜ: {_al_odak_puani}/100 | {html.escape(_al_odak_etiket)}\n"
+                        f"⚡ ERKEN YAKALAMA: {_erken_yakalama_puani}/100 | {html.escape(_erken_yakalama_etiket)}\n"
+                        f"🎯 DEVAM GÜCÜ: {_al_odak_puani}/100 | {html.escape(_al_odak_etiket)}\n"
                         f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)}\n"
                         f"🔥 Genel Güç: {_genel_guc}/100 | 🌍 Piyasa: {html.escape(_destek_etiket)}\n\n"
                         f"<pre>{html.escape(_blok_ust)}</pre>\n"
@@ -3666,13 +3783,21 @@ while True:
                         f"{(_btc_sok_etiket + ' | BTC 3s ' + format(_btc3, '+.2f') + '% | Piyasa 3s ' + format(_piyasa3, '+.2f') + '%' + chr(10)) if _btc_sok_etiket else ''}"
                         f"🌍 Piyasa Devamı: {_piyasa_devam_etiket}"
                         f"{(' | Geri verme ' + format(_piyasa_geri_verme, '.2f') + '%') if _piyasa_geri_verme > 0 else ''}\n"
-                        f"🎯 AL GÜCÜ: {_al_odak_puani}/100 | {_al_odak_etiket}\n"
+                        f"⚡ ERKEN YAKALAMA: {_erken_yakalama_puani}/100 | {_erken_yakalama_etiket}\n"
+                        f"🎯 DEVAM GÜCÜ: {_al_odak_puani}/100 | {_al_odak_etiket}\n"
                         f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | Kalıcılık {a.get('kalicilik_skoru', 0)}\n"
                         f"🔥 Genel Güç: {_genel_guc}/100 | 🌍 Piyasa: {_destek_etiket}\n\n"
                         f"{_blok_ust}\n\n"
                         f"{_blok_alt}\n\n"
                         f"{neden_alarm}📌 Önemli Neden ({_onemli_neden_sayisi}/7): {_neden_temiz}\n"
                     )
+                    # V12 HYBRID ikinci kapı:
+                    # Assistant AL üretir; Sinyal49 devam korumaları bunu daha seçici hale getirir.
+                    _hybrid_ok, _hybrid_neden = v12_hybrid_s49_kapisi(a)
+                    if not _hybrid_ok:
+                        print(f"[V12 HYBRID VETO] {a.get('symbol')} | {_hybrid_neden}")
+                        continue
+
                     print(mesaj)
                     telegram_gonder(mesaj_html, parse_mode="HTML")
                     # Mesaj gönderildikten sonra sıra olayını kalıcı kayda al.
