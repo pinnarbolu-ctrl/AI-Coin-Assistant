@@ -3411,3 +3411,469 @@ while True:
 
                     # 10 adet ham nedenden ziyade ağırlıklı kalite:
                     # teorik üst sınır 10 neden x 10 puan = 100.
+                    _neden_agirlikli_toplam = sum(_neden_puanlari)
+                    _neden_kalite_agirlikli = max(0.0, min(100.0, _neden_agirlikli_toplam))
+
+                    # Alarm önemli neden sayısına göre.
+                    neden_alarm = "🚨 🚨 " if _onemli_neden_sayisi >= 4 else ""
+
+                    # Telegram'da yalnız gerçekten önemli nedenleri göster.
+                    # Düşük öncelikli nedenler arka planda öğrenme/rapor için tutulmaya devam eder.
+                    neden = " • ".join(_onemli_nedenler)
+
+                    mikro = a.get("mikro") or {}
+                    mikro_satir = ""
+                    if mikro:
+                        mikro_satir = (
+                            f"⏱ 1dk %{mikro.get('d1', 0)} | 3dk %{mikro.get('d3', 0)} | "
+                            f"5dk %{mikro.get('d5', 0)} | 10dk %{mikro.get('d10', 0)}\n"
+                        )
+
+                    gorunen_coin = a['symbol'][:-3] if a['symbol'].endswith("TRY") else a['symbol']
+                    # 5+ benzerlik skoru öğrenme/arka plan için hesaplanmaya devam eder;
+                    # Telegram mesajında artık elmas/5+ etiketi olarak gösterilmez.
+                    bes_skor, bes_nedenler = bes_plus_benzerlik_skoru(a)
+                    risk = a.get('risk', 'Bilinmiyor')
+                    risk = risk.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "")
+
+                    # Piyasa desteği yalnız MESAJ BİLGİSİDİR; AL filtresini/skorları değiştirmez.
+                    # BTC ve piyasa 3 saatlik hareketi birlikte değerlendirilir.
+                    _piyasa3_anlik = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
+                    _btc3_anlik = float(btc_d.get("3s", 0) or 0)
+                    if _btc3_anlik >= 1.0 and _piyasa3_anlik >= 1.0:
+                        piyasa_destek_satir = (
+                            f"🌍 Piyasa desteği: 🟢 GÜÇLÜ | "
+                            f"BTC 3s %{_btc3_anlik:+.2f} | Piyasa 3s %{_piyasa3_anlik:+.2f}"
+                        )
+                    elif _btc3_anlik <= -1.0 or _piyasa3_anlik <= -1.0:
+                        piyasa_destek_satir = (
+                            f"🌍 Piyasa desteği: 🔴 ZAYIF | "
+                            f"BTC 3s %{_btc3_anlik:+.2f} | Piyasa 3s %{_piyasa3_anlik:+.2f}"
+                        )
+                    else:
+                        piyasa_destek_satir = (
+                            f"🌍 Piyasa desteği: 🟡 SINIRLI / YATAY | "
+                            f"BTC 3s %{_btc3_anlik:+.2f} | Piyasa 3s %{_piyasa3_anlik:+.2f}"
+                        )
+
+                    # Nedenleri artık temizleyip düşürme: teknik nedenler dahil hepsi görünür.
+                    # Böylece haftalık geliştirme analizinde hangi özelliklerin eşlik ettiği
+                    # Telegram üzerinden de açıkça izlenebilir.
+                    _neden_temiz = neden or "Belirgin önemli neden yok."
+
+                    # Telefon ekranında daha okunaklı kompakt 2x2 düzen:
+                    # her satırda en fazla iki özellik, Neden bölümü ayrı paragraf.
+                    _d1 = mikro.get('d1', 0) if mikro else 0
+                    _d3 = mikro.get('d3', 0) if mikro else 0
+                    _d5 = mikro.get('d5', 0) if mikro else 0
+                    _d10 = mikro.get('d10', 0) if mikro else 0
+
+                    # Destek etiketi tek başına; BTC/Piyasa değerleri aşağıda 2'li satırda.
+                    if _btc3_anlik >= 1.0 and _piyasa3_anlik >= 1.0:
+                        _destek_etiket = "🟢 GÜÇLÜ"
+                    elif _btc3_anlik <= -1.0 or _piyasa3_anlik <= -1.0:
+                        _destek_etiket = "🔴 ZAYIF"
+                    else:
+                        _destek_etiket = "🟡 SINIRLI / YATAY"
+
+                    # GENEL GÜÇ V1 — yalnız bilgi/öğrenme puanıdır, AL filtresine dokunmaz.
+                    # Skor kalitesi %30 + momentum %25 + piyasa desteği %20 + neden kalitesi %25.
+                    def _clamp100(v):
+                        try:
+                            return max(0.0, min(100.0, float(v)))
+                        except Exception:
+                            return 0.0
+
+                    _kal_raw = _clamp100(a.get('kalicilik_skoru', 0))
+                    # 95+ Kalıcılık artık "daha da güçlü" diye sınırsız ödüllendirilmez.
+                    _kal_genel = 82.0 if _kal_raw >= 95 else _kal_raw
+
+                    _skor_kalite = sum([
+                        _clamp100(a.get('ai_skoru', 0)),
+                        _clamp100(a.get('giris_kalitesi', 0)),
+                        _clamp100(a.get('devam_gucu', 0)),
+                        _kal_genel,
+                    ]) / 4.0
+
+                    # Yüzdesel momentumları ortak 0-100 ölçeğine taşı. 0%% yaklaşık nötr=50.
+                    def _momentum_puani(x):
+                        return _clamp100(50.0 + 12.0 * float(x or 0))
+                    _momentum_kalite = (
+                        0.15 * _momentum_puani(_d1) +
+                        0.25 * _momentum_puani(_d3) +
+                        0.30 * _momentum_puani(_d5) +
+                        0.30 * _momentum_puani(_d10)
+                    )
+
+                    if _destek_etiket.startswith("🟢"):
+                        _piyasa_kalite = 85.0
+                    elif _destek_etiket.startswith("🔴"):
+                        _piyasa_kalite = 25.0
+                    else:
+                        _piyasa_kalite = 55.0
+
+                    _neden_kalite = _clamp100(_neden_kalite_agirlikli)
+
+                    # GENEL GÜÇ V2
+                    # Öncelik: Devam > 60dk göreceli güç > sağlıklı Kalıcılık bandı >
+                    # hareket teyitleri > ADX > neden kalabalığı.
+                    _devam_g = _clamp100(a.get("devam_gucu", 0))
+                    _rel_bonus_val = float(rel_bonus or 0)
+                    _rel_guc = 100.0 if _rel_bonus_val >= 2 else (65.0 if _rel_bonus_val == 1 else 25.0)
+
+                    _kal_raw2 = _clamp100(a.get("kalicilik_skoru", 0))
+                    if 88 <= _kal_raw2 <= 94:
+                        _kal_bant = 100.0
+                    elif 84 <= _kal_raw2 < 88:
+                        _kal_bant = 75.0
+                    elif 95 <= _kal_raw2 <= 97:
+                        _kal_bant = 55.0
+                    elif _kal_raw2 > 97:
+                        _kal_bant = 35.0
+                    else:
+                        _kal_bant = 50.0
+
+                    _hareket_teyit_sayisi = len(hizlar)
+                    _hareket_guc = min(100.0, _hareket_teyit_sayisi * 20.0)
+                    try:
+                        _adx_val = float(a.get("adx", 0) or 0)
+                    except Exception:
+                        _adx_val = 0.0
+                    _adx_guc = min(100.0, max(0.0, (_adx_val - 20.0) * 4.0))
+
+                    # Neden adedi artık ana sürücü değil; destekleyici %10.
+                    _genel_guc = round(
+                        0.30 * _devam_g +
+                        0.20 * _rel_guc +
+                        0.18 * _kal_bant +
+                        0.12 * _hareket_guc +
+                        0.10 * _adx_guc +
+                        0.10 * _neden_kalite
+                    )
+                    a["genel_guc_skoru"] = int(_genel_guc)
+                    # Haftalık geliştirme motoru yalnız toplamı değil, puanı hangi blokların şişirdiğini de görsün.
+                    a["genel_skor_kalite"] = round(_skor_kalite, 2)
+                    a["genel_momentum_kalite"] = round(_momentum_kalite, 2)
+                    a["genel_piyasa_kalite"] = round(_piyasa_kalite, 2)
+                    a["genel_neden_kalite"] = round(_neden_kalite, 2)
+                    a["genel_devam_bilesen"] = round(_devam_g, 2)
+                    a["genel_rel_bilesen"] = round(_rel_guc, 2)
+                    a["genel_kalicilik_bant"] = round(_kal_bant, 2)
+                    a["genel_hareket_bilesen"] = round(_hareket_guc, 2)
+                    a["genel_adx_bilesen"] = round(_adx_guc, 2)
+                    a["neden_sayisi"] = int(toplam_neden_sayisi)
+                    a["onemli_neden_sayisi"] = int(_onemli_neden_sayisi)
+                    a["neden_agirlikli_toplam"] = round(_neden_agirlikli_toplam, 2)
+
+                    # PİYASA DEVAM TEYİDİ V1
+                    # Anlık pozitif görüntü yerine son ~60 saniyedeki devamlılığı ölçer.
+                    # Sert veto değildir; sahte kırılım/geri vermede AL Gücü'nden ceza düşer.
+                    def _piyasa_devam_hafiza_guncelle(btc3, piyasa3):
+                        global _PIYASA_DEVAM_HAFIZA
+                        simdi_local = time.time()
+                        try:
+                            _PIYASA_DEVAM_HAFIZA.append({
+                                "t": simdi_local,
+                                "btc3": float(btc3 or 0),
+                                "piyasa3": float(piyasa3 or 0),
+                            })
+                            alt_sinir = simdi_local - PIYASA_DEVAM_HAFIZA_SN
+                            _PIYASA_DEVAM_HAFIZA[:] = [
+                                x for x in _PIYASA_DEVAM_HAFIZA
+                                if float(x.get("t", 0) or 0) >= alt_sinir
+                            ]
+                        except Exception:
+                            pass
+
+                    def _piyasa_devam_analiz(btc3, piyasa3):
+                        _piyasa_devam_hafiza_guncelle(btc3, piyasa3)
+                        veri = list(_PIYASA_DEVAM_HAFIZA)
+                        if len(veri) < 3:
+                            return {
+                                "etiket": "⏳ İZLENİYOR",
+                                "ceza": 0,
+                                "teyit": False,
+                                "geri_verme": 0.0,
+                                "pozitif_oran": 0.0,
+                            }
+
+                        simdi_local = time.time()
+                        son60 = [x for x in veri if simdi_local - float(x.get("t", 0) or 0) <= 60]
+                        if len(son60) < 3:
+                            son60 = veri[-6:]
+
+                        btc_vals = [float(x.get("btc3", 0) or 0) for x in son60]
+                        piy_vals = [float(x.get("piyasa3", 0) or 0) for x in son60]
+
+                        pozitif = sum(1 for b, p in zip(btc_vals, piy_vals) if b > 0 and p > 0)
+                        pozitif_oran = pozitif / max(1, len(son60))
+
+                        btc_tepe = max(btc_vals)
+                        piy_tepe = max(piy_vals)
+                        btc_son = btc_vals[-1]
+                        piy_son = piy_vals[-1]
+
+                        btc_geri = max(0.0, btc_tepe - btc_son)
+                        piy_geri = max(0.0, piy_tepe - piy_son)
+                        geri_verme = max(btc_geri, piy_geri)
+
+                        teyit = (
+                            len(son60) >= 3
+                            and pozitif_oran >= 0.60
+                            and btc_son >= 0
+                            and piy_son >= 0
+                            and geri_verme < 0.35
+                        )
+
+                        ceza = 0
+                        if not teyit:
+                            ceza += 6
+                        if pozitif_oran < 0.50:
+                            ceza += 6
+                        if geri_verme >= 0.25:
+                            ceza += 6
+                        if geri_verme >= 0.45:
+                            ceza += 6
+                        if btc_son < 0 and piy_son < 0:
+                            ceza += 6
+
+                        ceza = min(24, ceza)
+
+                        if teyit:
+                            etiket = "✅ TEYİTLİ"
+                        elif geri_verme >= 0.45:
+                            etiket = "↩️ SAHTE KIRILIM"
+                        else:
+                            etiket = "⚠️ TEYİTSİZ"
+
+                        return {
+                            "etiket": etiket,
+                            "ceza": ceza,
+                            "teyit": teyit,
+                            "geri_verme": round(geri_verme, 2),
+                            "pozitif_oran": round(pozitif_oran, 2),
+                        }
+
+                    # BTC ŞOK KORUMASI V1
+                    # Amaç: BTC'de ani aşağı hızlanma + piyasa zayıflaması varken
+                    # coin ne kadar güçlü görünürse görünsün AL gücünün yapay yüksek kalmasını önlemek.
+                    # Sert veto değildir; yalnız AL Gücü puanına dinamik ceza ve görünür uyarı ekler.
+                    try:
+                        _btc3 = float(a.get("btc_3s", 0) or 0)
+                    except Exception:
+                        _btc3 = 0.0
+                    try:
+                        _piyasa3 = float(a.get("piyasa_3s", 0) or 0)
+                    except Exception:
+                        _piyasa3 = 0.0
+
+                    _piyasa_devam = _piyasa_devam_analiz(_btc3, _piyasa3)
+                    _piyasa_devam_etiket = _piyasa_devam.get("etiket", "⏳ İZLENİYOR")
+                    _piyasa_devam_ceza = int(_piyasa_devam.get("ceza", 0) or 0)
+                    _piyasa_geri_verme = float(_piyasa_devam.get("geri_verme", 0) or 0)
+                    _piyasa_pozitif_oran = float(_piyasa_devam.get("pozitif_oran", 0) or 0)
+
+                    # Kademeli şok skoru:
+                    # BTC ve piyasa aynı anda negatife hızlanıyorsa ceza büyür.
+                    _btc_sok_puani = 0
+                    if _btc3 <= -0.20:
+                        _btc_sok_puani += 10
+                    if _btc3 <= -0.40:
+                        _btc_sok_puani += 10
+                    if _btc3 <= -0.70:
+                        _btc_sok_puani += 10
+                    if _piyasa3 <= -0.25:
+                        _btc_sok_puani += 8
+                    if _piyasa3 <= -0.50:
+                        _btc_sok_puani += 7
+
+                    # BTC-piyasa birlikte aşağıysa ekstra risk.
+                    if _btc3 < 0 and _piyasa3 < 0:
+                        _btc_sok_puani += 5
+
+                    _btc_sok_puani = min(40, _btc_sok_puani)
+
+                    if _btc_sok_puani >= 30:
+                        _btc_sok_etiket = "🚨 BTC ŞOKU"
+                    elif _btc_sok_puani >= 18:
+                        _btc_sok_etiket = "⚠️ BTC ZAYIFLAMA"
+                    elif _btc_sok_puani >= 8:
+                        _btc_sok_etiket = "🟡 BTC BASKISI"
+                    else:
+                        _btc_sok_etiket = ""
+
+                    # ERKEN YAKALAMA V1
+                    # Eski Assistant'ın aday üretme hassasiyetini ayrı bir skor olarak korur.
+                    # Amaç: hareketin erken fark edilmesini ölçmek; devam kalitesiyle karıştırmamak.
+                    try:
+                        _erken_raw = float(a.get("erken_skor", a.get("erken_skoru", 0)) or 0)
+                    except Exception:
+                        _erken_raw = 0.0
+                    try:
+                        _giris_raw = float(a.get("giris_kalitesi", 0) or 0)
+                    except Exception:
+                        _giris_raw = 0.0
+                    try:
+                        _radar_raw = float(a.get("radar_skoru", 0) or 0)
+                    except Exception:
+                        _radar_raw = 0.0
+                    try:
+                        _hacim_raw = float(a.get("hacim_kat", a.get("hacim_kat_son", 0)) or 0)
+                    except Exception:
+                        _hacim_raw = 0.0
+
+                    # Hacim katkısı sınırlı; tek başına erken yakalama skorunu şişirmesin.
+                    _hacim_erken = max(0.0, min(100.0, (_hacim_raw / 3.0) * 100.0))
+
+                    # Mikro/erken kategori varsa küçük destek.
+                    _kat_text = str(a.get("radar_kategori", "") or "")
+                    _mikro_bonus = 100.0 if ("Mikro" in _kat_text or "Erken" in _kat_text) else 55.0
+
+                    _erken_yakalama_puani = round(max(0, min(100,
+                        0.35 * _erken_raw +
+                        0.30 * _giris_raw +
+                        0.20 * _radar_raw +
+                        0.10 * _hacim_erken +
+                        0.05 * _mikro_bonus
+                    )))
+
+                    if _erken_yakalama_puani >= 85:
+                        _erken_yakalama_etiket = "⚡ ÇOK ERKEN"
+                    elif _erken_yakalama_puani >= 72:
+                        _erken_yakalama_etiket = "🟢 ERKEN"
+                    elif _erken_yakalama_puani >= 60:
+                        _erken_yakalama_etiket = "✅ ZAMANINDA"
+                    else:
+                        _erken_yakalama_etiket = "🟡 GEÇ / ZAYIF"
+
+                    a["erken_yakalama_puani"] = int(_erken_yakalama_puani)
+                    a["erken_yakalama_etiket"] = _erken_yakalama_etiket
+
+                    # AL ODAĞI V1
+                    # Mesajın en üstünde görünen ana kalite özeti.
+                    # Neden adedi ve Genel Güç'ten bağımsızdır; videolarda daha ayırıcı görünen
+                    # Devam + 60dk göreceli güç + sağlıklı Kalıcılık bandı + hareket teyidi + ADX kullanılır.
+                    _al_odak_ham = (
+                        0.35 * _devam_g +
+                        0.25 * _rel_guc +
+                        0.20 * _kal_bant +
+                        0.10 * _hareket_guc +
+                        0.10 * _adx_guc
+                    )
+                    _al_odak_puani = round(max(0, min(
+                        100,
+                        _al_odak_ham - _btc_sok_puani - _piyasa_devam_ceza
+                    )))
+
+                    if _al_odak_puani >= 82:
+                        _al_odak_etiket = "🚀 ÇOK GÜÇLÜ"
+                    elif _al_odak_puani >= 72:
+                        _al_odak_etiket = "🟢 GÜÇLÜ"
+                    elif _al_odak_puani >= 62:
+                        _al_odak_etiket = "✅ UYGUN"
+                    else:
+                        _al_odak_etiket = "🟡 TEMKİNLİ"
+
+                    a["al_odak_puani"] = int(_al_odak_puani)
+                    a["al_odak_etiket"] = _al_odak_etiket
+                    a["btc_sok_puani"] = int(_btc_sok_puani)
+                    a["btc_sok_etiket"] = _btc_sok_etiket
+                    a["piyasa_devam_ceza"] = int(_piyasa_devam_ceza)
+                    a["piyasa_devam_etiket"] = _piyasa_devam_etiket
+                    a["piyasa_geri_verme"] = float(_piyasa_geri_verme)
+                    a["piyasa_pozitif_oran"] = float(_piyasa_pozitif_oran)
+
+                    # V12 SADE MESAJ
+                    # V12 Hybrid motoru, ikinci kapısı, öğrenme ve rapor mantığı aynen korunur.
+                    # Yalnız Telegram görünümü eski Assistant / sade V11 tarzına çevrilir.
+                    _sinyal_sira, _onceki_5 = _sinyal_sira_hazirla(a.get("symbol", ""))
+                    _sira_prefix = _sira_etiketi(_sinyal_sira)
+                    _onceki_5_etiket = " | Önceki +%5 ✅" if _onceki_5 else ""
+
+                    _rsi = teknik.get("rsi")
+                    _adx = teknik.get("adx")
+                    _ema_yon = (
+                        "Yukarı"
+                        if teknik.get("ema20") is not None
+                        and teknik.get("ema50") is not None
+                        and teknik.get("ema20") > teknik.get("ema50")
+                        else "Aşağı"
+                    )
+                    _macd_yon = (
+                        "Pozitif"
+                        if teknik.get("macd_hist") is not None
+                        and teknik.get("macd_hist") > 0
+                        else "Negatif"
+                    )
+                    _rsi_txt = "NA" if _rsi is None else f"{float(_rsi):.1f}"
+                    _adx_txt = "NA" if _adx is None else f"{float(_adx):.1f}"
+
+                    _btc_sok_satir = ""
+                    if _btc_sok_etiket:
+                        _btc_sok_satir = (
+                            f"{_btc_sok_etiket} | BTC 3s %{_btc3:+.2f} | "
+                            f"Piyasa 3s %{_piyasa3:+.2f}\n"
+                        )
+
+                    _geri_txt = (
+                        f" | Geri verme %{_piyasa_geri_verme:.2f}"
+                        if _piyasa_geri_verme > 0 else ""
+                    )
+
+                    mesaj = (
+                        f"{_sira_prefix} {gorunen_coin} | {a.get('radar_kategori', '')} + 🟢 AL{_onceki_5_etiket}\n\n"
+                        f"{_btc_sok_satir}"
+                        f"🎯 Devam Gücü: {_al_odak_puani}/100 | {_al_odak_etiket}\n"
+                        f"⚡ Erken Yakalama: {_erken_yakalama_puani}/100 | {_erken_yakalama_etiket}\n"
+                        f"🌍 Piyasa: {_destek_etiket} | Devam: {_piyasa_devam_etiket}{_geri_txt}\n"
+                        f"⚡ Devam {a.get('devam_gucu', 0)} | Rel +{int(rel_bonus or 0)} | "
+                        f"Kalıcılık {a.get('kalicilik_skoru', 0)}\n\n"
+                        f"AI: {a.get('ai_skoru', 0)} | Risk: {risk}\n"
+                        f"Radar: {a.get('radar_skoru', 0)}/100 | Fiyat: {round(a.get('fiyat', 0), 4)} | "
+                        f"Hacim: {a.get('hacim', 0)}x\n"
+                        f"1dk: %{_d1} | 3dk: %{_d3} | 5dk: %{_d5} | 10dk: %{_d10}\n"
+                        f"BTC 3s: %{_btc3_anlik:+.2f} | Piyasa 3s: %{_piyasa3_anlik:+.2f}\n"
+                        f"EMA: {_ema_yon} | RSI: {_rsi_txt} | ADX: {_adx_txt} | MACD: {_macd_yon}\n\n"
+                        f"{neden_alarm}Neden: {_neden_temiz}\n"
+                    )
+
+                    # V12 HYBRID ikinci kapı:
+                    # Assistant AL üretir; Sinyal49 devam korumaları bunu daha seçici hale getirir.
+                    _hybrid_ok, _hybrid_neden = v12_hybrid_s49_kapisi(a)
+                    if not _hybrid_ok:
+                        print(f"[V12 HYBRID VETO] {a.get('symbol')} | {_hybrid_neden}")
+                        continue
+
+                    print(mesaj)
+                    telegram_gonder(mesaj)
+                    # Mesaj gönderildikten sonra sıra olayını kalıcı kayda al.
+                    a["_sinyal_event_id"] = _sinyal_sira_ekle(a.get("symbol", ""), a.get("fiyat", 0))
+                    # Gönderilmiş her AL için fiyat devamını izler; AL kararını değiştirmez.
+                    bes_fiyat_teyit_baslat(a)
+                    gonderilenler.append(a)
+
+                # Yalnızca gerçekten gönderilen AL'ları +%5 kâr bildirimi ve 3 saatlik rejim öğrenmesi için takip et.
+                piyasa_medyan3 = statistics.median(piyasa_degisim3leri) if piyasa_degisim3leri else 0.0
+                btc_giris_fiyati = ticker_fiyat_haritasi.get("BTCTRY", 0)
+                for _a in gonderilenler:
+                    al_takip_baslat(_a)
+                    al_ogrenme_baslat(_a, btc_d, piyasa_fiyatlari, piyasa_medyan3, btc_giris_fiyati)
+
+        # Ana tarama 60 sn; kâr bildirimi için açık AL'lar 15 sn'de bir kontrol edilir.
+        beklenen = 0
+        while beklenen < TARAMA_SURESI:
+            sure = min(POZISYON_TAKIP_SURESI, TARAMA_SURESI - beklenen)
+            time.sleep(sure)
+            beklenen += sure
+
+            if AL_TAKIP:
+                try:
+                    r = requests.get("https://api.btcturk.com/api/v2/ticker", timeout=10)
+                    r.raise_for_status()
+                    al_takip_guncelle(r.json().get("data", []))
+                except Exception as e:
+                    print("Kâr bildirim takip hatası:", e)
+
+    except Exception as e:
+        print("Bot genel hata:", e)
+        time.sleep(30)
