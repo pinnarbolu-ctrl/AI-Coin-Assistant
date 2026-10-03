@@ -99,8 +99,23 @@ STRATEJI_SURUMU = "V12_HYBRID_S49_ASSISTANT"
 _PIYASA_DEVAM_HAFIZA = []
 PIYASA_DEVAM_HAFIZA_SN = 180
 
-# 24 saatlik +%5 yakalama başarı raporu
-YUZDE5_RAPOR_ARALIGI = 7 * 24 * 60 * 60
+# 3 günlük ortak karşılaştırma raporu
+
+# ORTAK 3 GÜNLÜK RAPOR TAKVİMİ
+# İlk karşılaştırma: 06.10.2026 08:00 Türkiye saati (UTC+3).
+# Sonraki raporlar her 3 günde bir yine 08:00'de.
+ILK_3GUN_RAPOR_TS = 1791262800.0
+YUZDE5_RAPOR_ARALIGI = 3 * 24 * 60 * 60
+
+def _planli_3gun_rapor_zamani(simdi, meta):
+    """İlk raporu 06.10.2026 08:00 TR'de, sonra her 72 saatte bir gönderir."""
+    if simdi < ILK_3GUN_RAPOR_TS:
+        return False, ILK_3GUN_RAPOR_TS
+    idx = int((simdi - ILK_3GUN_RAPOR_TS) // YUZDE5_RAPOR_ARALIGI)
+    planli = ILK_3GUN_RAPOR_TS + idx * YUZDE5_RAPOR_ARALIGI
+    son_planli = float(meta.get("son_planli_rapor_ts", 0) or 0)
+    return son_planli < planli, planli
+
 YUZDE5_RAPOR_ETIKETI = "V12 HYBRID — Assistant + Sinyal49"
 _YUZDE5_META_DOSYA = os.path.join(_AL_DEFAULT_DIR, "yuzde5_basariraporu_v11.json")
 
@@ -130,7 +145,7 @@ if not _YUZDE5_META.get("baslangic"):
 
 def yuzde5_basariraporu_gerekirse_gonder():
     """
-    Her 7 günde V12 Hybrid'in:
+    Her 3 günde saat 08:00 TR'de V12 Hybrid'in:
     - +%5 başarısını
     - yanlış sinyal oranını
     - net sinyal kalitesini
@@ -139,12 +154,12 @@ def yuzde5_basariraporu_gerekirse_gonder():
     """
     global _YUZDE5_META
     simdi = time.time()
-    son_rapor = float(_YUZDE5_META.get("son_rapor", _YUZDE5_META.get("baslangic", simdi)) or simdi)
-    if simdi - son_rapor < YUZDE5_RAPOR_ARALIGI:
+    gonder, planli_ts = _planli_3gun_rapor_zamani(simdi, _YUZDE5_META)
+    if not gonder:
         return
 
-    pencere_bas = son_rapor
-    pencere_son = simdi
+    pencere_bas = planli_ts - YUZDE5_RAPOR_ARALIGI
+    pencere_son = planli_ts
 
     tum = [
         x for x in AL_OGRENME_KAYITLARI
@@ -228,7 +243,7 @@ def yuzde5_basariraporu_gerekirse_gonder():
     ]
 
     satirlar = [
-        f"📊 7 GÜNLÜK +%5 / YANLIŞ SİNYAL RAPORU — {YUZDE5_RAPOR_ETIKETI}",
+        f"📊 3 GÜNLÜK +%5 / YANLIŞ SİNYAL RAPORU — {YUZDE5_RAPOR_ETIKETI}",
         "",
         f"Tamamlanan sinyal: {len(tamam)}",
         f"✅ +%5 yapan: {len(basarili)}",
@@ -256,7 +271,8 @@ def yuzde5_basariraporu_gerekirse_gonder():
     print(mesaj)
     telegram_gonder(mesaj)
 
-    _YUZDE5_META["son_rapor"] = simdi
+    _YUZDE5_META["son_rapor"] = planli_ts
+    _YUZDE5_META["son_planli_rapor_ts"] = planli_ts
     _yuzde5_meta_kaydet(_YUZDE5_META)
 
 
