@@ -1,8 +1,8 @@
 """
 BTCTurk İki Dönüş Gölge Motoru
 
-1) ⚡ SAAT İÇİ DÖNÜŞ: 15-60 dakikalık sert çekilme sonrası doğrulanmış dönüş.
-2) 🔄 DERİN DÖNÜŞ: birkaç saatlik düşüş sonrası hacimli ve doğrulanmış dönüş.
+1) ⚡ SAAT İÇİ DÖNÜŞ: 15-60 dakikalık sert çekilme sonrası erken/teyitli dönüş.
+2) 🔄 SAATLERCE DÜŞÜP DÖNEN: birkaç saatlik düşüş sonrası erken/teyitli dönüş.
 
 Bu dosya yalnız gözlem/Telegram mesajı ve başarı ölçümü yapar.
 Özel API, bakiye, gerçek AL/SAT veya otomatik emir içermez.
@@ -25,9 +25,25 @@ CHAT_IDS = (
 )
 
 TARAMA_SURESI = 60
+HIZLI_TAKIP_SURESI = 15
 TAKIP_EDILECEK_LIKIT_COIN = 25
 MIN_TAHMINI_CIRO_TRY = 1_000_000
 MAX_SPREAD = 0.60
+MAX_HIZLI_ORDERBOOK = 12
+
+# Ön havuz ve gerçek zamanlı dönüş aşamaları. İlk tarama yalnız adayı bulur;
+# Telegram kararı 15 saniyelik takipte verilir.
+ADAY_HAVUZ_SURESI = 2 * 60 * 60
+YENI_DIP_BEKLEME = 45
+ERKEN_DONUS_MIN = 0.40
+ERKEN_DONUS_MAX_SAATLIK = 1.20
+ERKEN_DONUS_MAX_DERIN = 1.50
+TEYIT_DONUS_MIN = 0.80
+TEYIT_DONUS_MAX = 2.50
+ERKEN_HIZ_MIN = 0.12
+ERKEN_ORDERBOOK_MIN = 0.95
+TEYIT_ORDERBOOK_MIN = 1.10
+TEYIT_HACIM_MIN = 1.30
 
 # Saat içi dönüş: yakın tepeden çekilme ve dipten toparlanma.
 SAATLIK_CEKILIS_MIN = 1.50
@@ -96,6 +112,9 @@ def json_oku(dosya, varsayilan):
 
 KAYITLAR = json_oku(KAYIT_DOSYA, [])
 META = json_oku(META_DOSYA, {"son_rapor": time.time()})
+ADAY_HAVUZU = {}
+TICK_GECMISI = {}
+PIYASA_DURUM = {"btc5": 0.0, "piyasa5": 0.0, "zaman": 0.0}
 
 
 def telegram_gonder(mesaj):
@@ -262,20 +281,34 @@ def derin_ozet(d15, bir_ozet):
     }
 
 
-def son_mesaj_zamani(symbol, tip):
+def son_mesaj_zamani(symbol, tip, asama=None):
     for k in reversed(KAYITLAR):
-        if k.get("symbol") == symbol and k.get("tip") == tip:
+        kayit_asama = k.get("asama", "teyitli")
+        if (
+            k.get("symbol") == symbol
+            and k.get("tip") == tip
+            and (asama is None or kayit_asama == asama)
+        ):
             return float(k.get("zaman", 0) or 0)
     return 0.0
 
 
-def kayit_ac(symbol, tip, fiyat, oz, derin, ob, btc5, piyasa5):
+def kayit_ac(
+    symbol, tip, fiyat, oz, derin, ob, btc5, piyasa5,
+    asama="teyitli", donus_override=None, cekilis_override=None,
+):
+    cekilis = derin.get("cekilis") if tip == "derin" else oz.get("cekilis")
+    donus = derin.get("donus") if tip == "derin" else oz.get("donus")
+    if cekilis_override is not None:
+        cekilis = cekilis_override
+    if donus_override is not None:
+        donus = donus_override
     event = {
-        "symbol": symbol, "tip": tip, "zaman": time.time(), "giris": fiyat,
+        "symbol": symbol, "tip": tip, "asama": asama,
+        "zaman": time.time(), "giris": fiyat,
         "mum_zamani": oz.get("mum_zamani"), "max_getiri": 0.0,
         "min_getiri": 0.0, "son_getiri": 0.0, "tamamlandi": False,
-        "cekilis": derin.get("cekilis") if tip == "derin" else oz.get("cekilis"),
-        "donus": derin.get("donus") if tip == "derin" else oz.get("donus"),
+        "cekilis": cekilis, "donus": donus,
         "hacim_x": oz.get("hacim_x"), "d3": oz.get("d3"), "d5": oz.get("d5"),
         "spread": ob.get("spread"), "orderbook": ob.get("dengesizlik"),
         "btc5": btc5, "piyasa5": piyasa5,
@@ -288,12 +321,19 @@ def kayit_ac(symbol, tip, fiyat, oz, derin, ob, btc5, piyasa5):
 
 def mesaj_uret(event):
     coin = str(event["symbol"]).replace("TRY", "")
+    asama = event.get("asama", "teyitli")
+    asama_baslik = "ERKEN ADAY" if asama == "erken" else "TEYİTLİ"
     if event["tip"] == "derin":
-        baslik = "🔄 DERİN DÖNÜŞ — İZLE"
+        baslik = f"🔄 SAATLERCE DÜŞÜP DÖNEN — {asama_baslik}"
         sure = "birkaç saatlik düşüş"
     else:
-        baslik = "⚡ SAAT İÇİ DÖNÜŞ — İZLE"
+        baslik = f"⚡ SAAT İÇİ DÖNÜŞ — {asama_baslik}"
         sure = "15–60dk çekiliş"
+    durum = (
+        "⚠️ Erken aday; tam dönüş teyidi henüz bekleniyor."
+        if asama == "erken"
+        else "✅ Dönüş koşulları teyit edildi."
+    )
     return (
         f"{baslik}\n"
         f"{coin}\n"
@@ -306,6 +346,7 @@ def mesaj_uret(event):
         f"📚 Alış/Satış derinliği: {float(event.get('orderbook', 0)):.2f}x\n"
         f"🌍 BTC 5dk: %{float(event.get('btc5', 0)):+.2f} | "
         f"Piyasa 5dk: %{float(event.get('piyasa5', 0)):+.2f}\n"
+        f"{durum}\n"
         "🧪 Gölge takip: +%1 / +%1.5 / +%2 — gerçek emir yok"
     )
 
@@ -355,8 +396,17 @@ def gunluk_rapor_gerekirse():
         if k.get("tamamlandi") and simdi - float(k.get("zaman", 0) or 0) <= 3 * 24 * 60 * 60
     ]
     satirlar = ["📊 3 GÜNLÜK İKİ DÖNÜŞ GÖLGE RAPORU"]
-    for tip, ad in (("saatlik", "⚡ Saat İçi Dönüş"), ("derin", "🔄 Derin Dönüş")):
-        g = [k for k in pencere if k.get("tip") == tip]
+    siniflar = (
+        ("saatlik", "erken", "⚡ Saat İçi Dönüş — Erken Aday"),
+        ("saatlik", "teyitli", "⚡ Saat İçi Dönüş — Teyitli"),
+        ("derin", "erken", "🔄 Saatlerce Düşüp Dönen — Erken Aday"),
+        ("derin", "teyitli", "🔄 Saatlerce Düşüp Dönen — Teyitli"),
+    )
+    for tip, asama, ad in siniflar:
+        g = [
+            k for k in pencere
+            if k.get("tip") == tip and k.get("asama", "teyitli") == asama
+        ]
         yanlis = sum(
             1 for k in g
             if float(k.get("max_getiri", 0) or 0) < 1.5
@@ -366,10 +416,172 @@ def gunluk_rapor_gerekirse():
             f"• {ad}: n={len(g)} | +%1 %{oran(g,1):.1f} | +%1.5 %{oran(g,1.5):.1f} | "
             f"+%2 %{oran(g,2):.1f} | yanlış %{yanlis:.1f}"
         )
-    satirlar.append("• Sonuçlar gerçek emir değildir; girişten sonraki 3 saati ölçer.")
+    gec = [k for k in pencere if k.get("asama") == "gec"]
+    satirlar.append(
+        f"• ⏱️ Geç kalan (>+%{TEYIT_DONUS_MAX:.1f}) ve gönderilmeyen: n={len(gec)} | "
+        f"sonradan +%1 %{oran(gec,1):.1f} | +%2 %{oran(gec,2):.1f}"
+    )
+    satirlar.append(
+        "• Erken/Teyitli ayrı ölçülür; geç kalanlar Telegram'a gönderilmez. Gerçek emir yok."
+    )
     telegram_gonder("\n".join(satirlar))
     META["son_rapor"] = simdi
     atomik_json_yaz(META_DOSYA, META)
+
+
+def _ticker_haritasi(ticker):
+    sonuc = {}
+    for x in ticker:
+        try:
+            symbol = str(x.get("pair", ""))
+            fiyat = float(x.get("last", 0) or 0)
+            bid = float(x.get("bid", 0) or 0)
+            ask = float(x.get("ask", 0) or 0)
+            orta = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
+            spread = ((ask - bid) / orta) * 100.0 if orta else 99.0
+            if symbol and fiyat > 0:
+                sonuc[symbol] = {
+                    "fiyat": fiyat, "bid": bid, "ask": ask, "spread": spread,
+                }
+        except Exception:
+            continue
+    return sonuc
+
+
+def _hizli_momentum(symbol, simdi):
+    gecmis = TICK_GECMISI.get(symbol, [])
+    referanslar = [(z, f) for z, f in gecmis if z <= simdi - YENI_DIP_BEKLEME]
+    if not referanslar:
+        return None
+    return pct(gecmis[-1][1], referanslar[-1][1])
+
+
+def hizli_adaylari_takip(ticker):
+    """Ön havuzdaki coinleri 15 saniyede bir izler ve iki aşamayı ayırır."""
+    simdi = time.time()
+    fiyatlar = _ticker_haritasi(ticker)
+
+    # 45-90 saniyelik gerçek zamanlı yönü ölçmek için kısa fiyat belleği.
+    for symbol, aday in list(ADAY_HAVUZU.items()):
+        bilgi = fiyatlar.get(symbol)
+        if not bilgi or simdi > float(aday.get("sona_erme", 0) or 0):
+            if simdi > float(aday.get("sona_erme", 0) or 0):
+                ADAY_HAVUZU.pop(symbol, None)
+                TICK_GECMISI.pop(symbol, None)
+            continue
+        gecmis = TICK_GECMISI.setdefault(symbol, [])
+        gecmis.append((simdi, bilgi["fiyat"]))
+        gecmis[:] = [(z, f) for z, f in gecmis if z >= simdi - 100]
+
+        dip = float(aday.get("dip", bilgi["fiyat"]) or bilgi["fiyat"])
+        if bilgi["fiyat"] < dip:
+            aday["dip"] = bilgi["fiyat"]
+            aday["son_dip_zamani"] = simdi
+            # Yeni dip yeni bir dönüş denemesidir; fakat soğuma yine korunur.
+            aday["gec_kayit"] = False
+
+    btc5 = float(PIYASA_DURUM.get("btc5", 0) or 0)
+    piyasa5 = float(PIYASA_DURUM.get("piyasa5", 0) or 0)
+    piyasa_uygun = btc5 >= BTC_5DK_ALT_SINIR and piyasa5 >= PIYASA_5DK_ALT_SINIR
+
+    degerlendirmeler = []
+    for symbol, aday in ADAY_HAVUZU.items():
+        bilgi = fiyatlar.get(symbol)
+        if not bilgi or aday.get("teyit_gonderildi") or aday.get("gec_kayit"):
+            continue
+        dip = float(aday.get("dip", 0) or 0)
+        if dip <= 0:
+            continue
+        donus = pct(bilgi["fiyat"], dip)
+
+        # +%2.5 üzerindeki ilk giriş artık kovalanmaz; yalnız gölgede kaydedilir.
+        if donus > TEYIT_DONUS_MAX:
+            if not aday.get("erken_gonderildi"):
+                oz = aday.get("oz") or {}
+                derin = aday.get("derin") or {}
+                ob = {"spread": bilgi.get("spread", 99), "dengesizlik": 0.0}
+                kayit_ac(
+                    symbol, aday["tip"], bilgi["fiyat"], oz, derin, ob,
+                    btc5, piyasa5, asama="gec", donus_override=donus,
+                    cekilis_override=aday.get("cekilis"),
+                )
+            aday["gec_kayit"] = True
+            continue
+
+        dipten_sure = simdi - float(aday.get("son_dip_zamani", simdi) or simdi)
+        hiz = _hizli_momentum(symbol, simdi)
+        if (
+            dipten_sure < YENI_DIP_BEKLEME
+            or hiz is None
+            or donus < ERKEN_DONUS_MIN - 0.10
+            or bilgi.get("spread", 99) > MAX_SPREAD
+        ):
+            continue
+        degerlendirmeler.append((donus, symbol, aday, bilgi, hiz))
+
+    # API yükünü sınırlamak için yalnız dönüş bandına en yakın adaylarda derinlik bakılır.
+    degerlendirmeler.sort(key=lambda x: x[0], reverse=True)
+    degerlendirmeler = degerlendirmeler[:MAX_HIZLI_ORDERBOOK]
+    orderbookler = {}
+    if degerlendirmeler:
+        with ThreadPoolExecutor(max_workers=6) as havuz:
+            gelecekler = {
+                havuz.submit(orderbook_ozeti, symbol): symbol
+                for _, symbol, _, _, _ in degerlendirmeler
+            }
+            for gelecek in as_completed(gelecekler):
+                orderbookler[gelecekler[gelecek]] = gelecek.result()
+
+    for donus, symbol, aday, bilgi, hiz in degerlendirmeler:
+        ob = orderbookler.get(symbol) or {}
+        if not ob or ob.get("spread", 99) > MAX_SPREAD or not piyasa_uygun:
+            continue
+        tip = aday["tip"]
+        soguma = DERIN_SOGUMA if tip == "derin" else AYNI_TIP_SOGUMA
+        oz = aday.get("oz") or {}
+        derin = aday.get("derin") or {}
+        fiyat = float(ob.get("ask", 0) or bilgi["fiyat"])
+
+        teyitli = bool(
+            TEYIT_DONUS_MIN <= donus <= TEYIT_DONUS_MAX
+            and oz.get("yesil") and oz.get("teyit")
+            and float(oz.get("d3", 0) or 0) > 0
+            and float(oz.get("hacim_x", 0) or 0) >= TEYIT_HACIM_MIN
+            and float(ob.get("dengesizlik", 0) or 0) >= TEYIT_ORDERBOOK_MIN
+            and hiz >= 0
+        )
+        if (
+            teyitli
+            and not aday.get("teyit_gonderildi")
+            and simdi - son_mesaj_zamani(symbol, tip, "teyitli") >= soguma
+        ):
+            event = kayit_ac(
+                symbol, tip, fiyat, oz, derin, ob, btc5, piyasa5,
+                asama="teyitli", donus_override=donus,
+                cekilis_override=aday.get("cekilis"),
+            )
+            aday["teyit_gonderildi"] = True
+            telegram_gonder(mesaj_uret(event))
+            continue
+
+        erken_ust = ERKEN_DONUS_MAX_DERIN if tip == "derin" else ERKEN_DONUS_MAX_SAATLIK
+        erken = bool(
+            ERKEN_DONUS_MIN <= donus <= erken_ust
+            and hiz >= ERKEN_HIZ_MIN
+            and float(ob.get("dengesizlik", 0) or 0) >= ERKEN_ORDERBOOK_MIN
+        )
+        if (
+            erken
+            and not aday.get("erken_gonderildi")
+            and simdi - son_mesaj_zamani(symbol, tip, "erken") >= soguma
+        ):
+            event = kayit_ac(
+                symbol, tip, fiyat, oz, derin, ob, btc5, piyasa5,
+                asama="erken", donus_override=donus,
+                cekilis_override=aday.get("cekilis"),
+            )
+            aday["erken_gonderildi"] = True
+            telegram_gonder(mesaj_uret(event))
 
 
 def tara():
@@ -394,55 +606,64 @@ def tara():
         for s in symbol_list if s != "BTCTRY" and ozetler.get(s)
     ]
     piyasa5 = statistics.median(piyasa5_list) if piyasa5_list else 0.0
+    PIYASA_DURUM.update({"btc5": btc5, "piyasa5": piyasa5, "zaman": time.time()})
     if btc5 < BTC_5DK_ALT_SINIR or piyasa5 < PIYASA_5DK_ALT_SINIR:
-        print(f"Yeni düşüş dalgası: BTC5={btc5:+.2f}, piyasa5={piyasa5:+.2f}; sinyal yok.")
-        gunluk_rapor_gerekirse()
-        return
+        print(f"Yeni düşüş dalgası: BTC5={btc5:+.2f}, piyasa5={piyasa5:+.2f}; gönderim bekler.")
 
-    fiyat_haritasi = {s: f for _, s, f, _ in secilen}
     simdi = time.time()
     for _, symbol, ticker_fiyat, ticker_spread in secilen:
         oz = ozetler.get(symbol) or {}
-        if not oz or not oz.get("yesil") or not oz.get("teyit"):
-            continue
-        # Aynı kapanmış mum iki taramada tekrar mesajlanmaz.
-        if any(
-            k.get("symbol") == symbol and k.get("mum_zamani") == oz.get("mum_zamani")
-            for k in KAYITLAR[-200:]
-        ):
+        if not oz:
             continue
         d15 = veriler.get(symbol, ({}, {}))[1]
         derin = derin_ozet(d15, oz)
+        mevcut = ADAY_HAVUZU.get(symbol)
+        if mevcut:
+            mevcut["oz"] = oz
+            mevcut["derin"] = derin
+
+        # Ön havuz için yeşil mum/hacim teyidi beklenmez; yalnız düşüş profili aranır.
         derin_aday = bool(
             derin
             and -DERIN_CEKILIS_MAX <= derin.get("cekilis", 0) <= -DERIN_CEKILIS_MIN
-            and derin.get("donus", 0) >= DERIN_DONUS_MIN
             and derin.get("kirmizi_pay", 0) >= DERIN_KIRMIZI_PAY_MIN
-            and oz.get("hacim_x", 0) >= DERIN_HACIM_MIN
-            and oz.get("d3", 0) > 0
         )
         saatlik_aday = bool(
             -SAATLIK_CEKILIS_MAX <= oz.get("cekilis", 0) <= -SAATLIK_CEKILIS_MIN
-            and oz.get("donus", 0) >= SAATLIK_DONUS_MIN
-            and oz.get("govde", 0) >= SAATLIK_MUM_GOVDE_MIN
-            and oz.get("hacim_x", 0) >= SAATLIK_HACIM_MIN
-            and oz.get("d3", 0) > 0
         )
-        tip = "derin" if derin_aday else ("saatlik" if saatlik_aday else None)
+        yeni_tip = "derin" if derin_aday else ("saatlik" if saatlik_aday else None)
+        tip = mevcut.get("tip") if mevcut else yeni_tip
         if not tip:
             continue
-        soguma = DERIN_SOGUMA if tip == "derin" else AYNI_TIP_SOGUMA
-        if simdi - son_mesaj_zamani(symbol, tip) < soguma:
+
+        if mevcut and not yeni_tip:
+            # Profil bandından çıksa da önceden yakalanan aday süre sonuna kadar izlenir.
             continue
-        ob = orderbook_ozeti(symbol)
-        if not ob or ob.get("spread", 99) > MAX_SPREAD:
+        dip = float(derin.get("dip2s", 0) if tip == "derin" else oz.get("dip15", 0) or 0)
+        cekilis = float(
+            derin.get("cekilis", 0) if tip == "derin" else oz.get("cekilis", 0) or 0
+        )
+        if dip <= 0:
             continue
-        # Satış duvarı belirginse ilk yeşil mum tek başına yeterli sayılmaz.
-        if ob.get("dengesizlik", 0) < 0.70:
-            continue
-        fiyat = float(ob.get("ask", 0) or fiyat_haritasi.get(symbol, ticker_fiyat))
-        event = kayit_ac(symbol, tip, fiyat, oz, derin, ob, btc5, piyasa5)
-        telegram_gonder(mesaj_uret(event))
+        if mevcut:
+            if dip < float(mevcut.get("dip", dip) or dip):
+                mevcut["dip"] = dip
+                mevcut["son_dip_zamani"] = simdi
+                mevcut["gec_kayit"] = False
+            mevcut.update({
+                "oz": oz, "derin": derin, "cekilis": cekilis,
+                "sona_erme": simdi + ADAY_HAVUZ_SURESI,
+            })
+        else:
+            ADAY_HAVUZU[symbol] = {
+                "tip": tip, "dip": dip, "cekilis": cekilis,
+                "oz": oz, "derin": derin, "eklenme": simdi,
+                "sona_erme": simdi + ADAY_HAVUZ_SURESI,
+                "son_dip_zamani": simdi, "erken_gonderildi": False,
+                "teyit_gonderildi": False, "gec_kayit": False,
+            }
+
+    hizli_adaylari_takip(ticker)
 
     gunluk_rapor_gerekirse()
 
@@ -450,16 +671,25 @@ def tara():
 def main():
     telegram_gonder(
         "✅ İki Dönüş Gölge Motoru başladı.\n"
-        "⚡ Saat İçi Dönüş + 🔄 Derin Dönüş izleniyor.\n"
+        "⚡ Saat İçi Dönüş + 🔄 Saatlerce Düşüp Dönen izleniyor.\n"
+        "Her başlık Erken Aday / Teyitli olarak ayrı ölçülür.\n"
         "Gerçek emir yok."
     )
+    son_tam_tarama = 0.0
     while True:
         bas = time.time()
         try:
-            tara()
+            if bas - son_tam_tarama >= TARAMA_SURESI:
+                tara()
+                son_tam_tarama = time.time()
+            else:
+                ticker = ticker_getir()
+                takip_guncelle(ticker)
+                hizli_adaylari_takip(ticker)
+                gunluk_rapor_gerekirse()
         except Exception as e:
             print("Genel tarama hatası:", e)
-        bekle = max(5, TARAMA_SURESI - (time.time() - bas))
+        bekle = max(2, HIZLI_TAKIP_SURESI - (time.time() - bas))
         time.sleep(bekle)
 
 
