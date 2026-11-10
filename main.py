@@ -41,6 +41,9 @@ ERKEN_DONUS_MAX_DERIN = 1.50
 TEYIT_DONUS_MIN = 0.80
 TEYIT_DONUS_MAX = 2.50
 ERKEN_HIZ_MIN = 0.12
+ERKEN_D3_MIN = -0.50
+ERKEN_D5_MIN = -0.80
+ERKEN_HACIM_MIN = 0.60
 ERKEN_ORDERBOOK_MIN = 0.95
 TEYIT_ORDERBOOK_MIN = 1.10
 TEYIT_HACIM_MIN = 1.30
@@ -546,6 +549,7 @@ def hizli_adaylari_takip(ticker):
             TEYIT_DONUS_MIN <= donus <= TEYIT_DONUS_MAX
             and oz.get("yesil") and oz.get("teyit")
             and float(oz.get("d3", 0) or 0) > 0
+            and float(oz.get("d5", 0) or 0) > 0
             and float(oz.get("hacim_x", 0) or 0) >= TEYIT_HACIM_MIN
             and float(ob.get("dengesizlik", 0) or 0) >= TEYIT_ORDERBOOK_MIN
             and hiz >= 0
@@ -568,6 +572,9 @@ def hizli_adaylari_takip(ticker):
         erken = bool(
             ERKEN_DONUS_MIN <= donus <= erken_ust
             and hiz >= ERKEN_HIZ_MIN
+            and float(oz.get("d3", 0) or 0) >= ERKEN_D3_MIN
+            and float(oz.get("d5", 0) or 0) >= ERKEN_D5_MIN
+            and float(oz.get("hacim_x", 0) or 0) >= ERKEN_HACIM_MIN
             and float(ob.get("dengesizlik", 0) or 0) >= ERKEN_ORDERBOOK_MIN
         )
         if (
