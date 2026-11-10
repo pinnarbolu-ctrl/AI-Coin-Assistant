@@ -85,7 +85,7 @@ AYNI_TIP_SOGUMA = 3 * 60 * 60
 DERIN_SOGUMA = 6 * 60 * 60
 SONUC_SURESI = 3 * 60 * 60
 YANLIS_ESIK = -1.00
-HEDEFLER = (1.0, 1.5, 2.0)
+HEDEFLER = (1.0, 1.5, 2.0, 3.0)
 
 _RAILWAY_VOLUME = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
 _DATA_DIR = _RAILWAY_VOLUME if _RAILWAY_VOLUME else ("/data" if os.path.isdir("/data") else ".")
@@ -405,6 +405,7 @@ def takip_guncelle(ticker):
             pass
     simdi = time.time()
     degisti = False
+    hedef_bildirimleri = []
     for k in KAYITLAR:
         if k.get("tamamlandi"):
             continue
@@ -416,12 +417,34 @@ def takip_guncelle(ticker):
         k["max_getiri"] = round(max(float(k.get("max_getiri", 0) or 0), getiri), 3)
         k["min_getiri"] = round(min(float(k.get("min_getiri", 0) or 0), getiri), 3)
         k["son_getiri"] = round(getiri, 3)
+        if (
+            k.get("asama") == "en_guclu"
+            and k.get("telegram_gonderildi")
+            and float(k.get("max_getiri", 0) or 0) >= 3.0
+            and not k.get("hedef3_bildirildi")
+        ):
+            k["hedef3_bildirildi"] = True
+            k["hedef3_zamani"] = simdi
+            coin = str(k.get("symbol", "")).replace("TRY", "")
+            kaynak = (
+                "🏆🔄 Saatlerce Düşüp Dönen — En Güçlü"
+                if k.get("tip") == "derin"
+                else "🏆⚡ Saat İçi Dönüş — En Güçlü"
+            )
+            hedef_bildirimleri.append(
+                "🎯 +%3 HEDEF GÖRÜLDÜ — " + coin + "\n"
+                + kaynak + "\n"
+                + f"Başlangıç: {giris:.8g} | Güncel: {fiyat:.8g}\n"
+                + f"Getiri: %{getiri:+.2f}"
+            )
         if simdi - float(k.get("zaman", simdi) or simdi) >= SONUC_SURESI:
             k["tamamlandi"] = True
             k["tamamlanma_zamani"] = simdi
         degisti = True
     if degisti:
         atomik_json_yaz(KAYIT_DOSYA, KAYITLAR)
+    for mesaj in hedef_bildirimleri:
+        telegram_gonder(mesaj)
 
 
 def oran(grup, hedef):
@@ -461,7 +484,7 @@ def gunluk_rapor_gerekirse():
         ) / len(g) * 100 if g else 0.0
         satirlar.append(
             f"• {ad}: n={len(g)} | +%1 %{oran(g,1):.1f} | +%1.5 %{oran(g,1.5):.1f} | "
-            f"+%2 %{oran(g,2):.1f} | yanlış %{yanlis:.1f}"
+            f"+%2 %{oran(g,2):.1f} | +%3 %{oran(g,3):.1f} | yanlış %{yanlis:.1f}"
         )
     gec = [k for k in pencere if k.get("asama") == "gec"]
     eski_sessiz = [k for k in pencere if k.get("asama") == "teyitli_sessiz"]
@@ -736,6 +759,7 @@ def main():
         "✅ İki Dönüş Gölge Motoru başladı.\n"
         "⚡ Saat İçi Dönüş + 🔄 Saatlerce Düşüp Dönen izleniyor.\n"
         "🏆 Telegram'a yalnız EN GÜÇLÜ dönüş gönderilir.\n"
+        "🎯 Gönderilen sinyal +%3 olursa tek hedef mesajı gelir.\n"
         "Erken aday ve normal teyit gölgede ölçülür.\n"
         "Gerçek emir yok."
     )
