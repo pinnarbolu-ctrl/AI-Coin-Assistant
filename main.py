@@ -299,6 +299,7 @@ def son_mesaj_zamani(symbol, tip, asama=None):
 def kayit_ac(
     symbol, tip, fiyat, oz, derin, ob, btc5, piyasa5,
     asama="teyitli", donus_override=None, cekilis_override=None,
+    telegram_gonderildi=True,
 ):
     cekilis = derin.get("cekilis") if tip == "derin" else oz.get("cekilis")
     donus = derin.get("donus") if tip == "derin" else oz.get("donus")
@@ -308,6 +309,7 @@ def kayit_ac(
         donus = donus_override
     event = {
         "symbol": symbol, "tip": tip, "asama": asama,
+        "telegram_gonderildi": telegram_gonderildi,
         "zaman": time.time(), "giris": fiyat,
         "mum_zamani": oz.get("mum_zamani"), "max_getiri": 0.0,
         "min_getiri": 0.0, "son_getiri": 0.0, "tamamlandi": False,
@@ -420,6 +422,11 @@ def gunluk_rapor_gerekirse():
             f"+%2 %{oran(g,2):.1f} | yanlış %{yanlis:.1f}"
         )
     gec = [k for k in pencere if k.get("asama") == "gec"]
+    sessiz_teyit = [k for k in pencere if k.get("asama") == "teyitli_sessiz"]
+    satirlar.append(
+        f"• 🔕 Erken aday sonrası sessiz teyit: n={len(sessiz_teyit)} | "
+        f"+%1 %{oran(sessiz_teyit,1):.1f} | +%2 %{oran(sessiz_teyit,2):.1f}"
+    )
     satirlar.append(
         f"• ⏱️ Geç kalan (>+%{TEYIT_DONUS_MAX:.1f}) ve gönderilmeyen: n={len(gec)} | "
         f"sonradan +%1 %{oran(gec,1):.1f} | +%2 %{oran(gec,2):.1f}"
@@ -506,7 +513,7 @@ def hizli_adaylari_takip(ticker):
                 kayit_ac(
                     symbol, aday["tip"], bilgi["fiyat"], oz, derin, ob,
                     btc5, piyasa5, asama="gec", donus_override=donus,
-                    cekilis_override=aday.get("cekilis"),
+                    cekilis_override=aday.get("cekilis"), telegram_gonderildi=False,
                 )
             aday["gec_kayit"] = True
             continue
@@ -554,18 +561,25 @@ def hizli_adaylari_takip(ticker):
             and float(ob.get("dengesizlik", 0) or 0) >= TEYIT_ORDERBOOK_MIN
             and hiz >= 0
         )
-        if (
-            teyitli
-            and not aday.get("teyit_gonderildi")
-            and simdi - son_mesaj_zamani(symbol, tip, "teyitli") >= soguma
-        ):
+        son_teyit = max(
+            son_mesaj_zamani(symbol, tip, "teyitli"),
+            son_mesaj_zamani(symbol, tip, "teyitli_sessiz"),
+        )
+        if teyitli and not aday.get("teyit_gonderildi") and simdi - son_teyit >= soguma:
+            yakin_erken_mesaj = (
+                aday.get("erken_gonderildi")
+                or simdi - son_mesaj_zamani(symbol, tip, "erken") < soguma
+            )
+            asama = "teyitli_sessiz" if yakin_erken_mesaj else "teyitli"
             event = kayit_ac(
                 symbol, tip, fiyat, oz, derin, ob, btc5, piyasa5,
-                asama="teyitli", donus_override=donus,
+                asama=asama, donus_override=donus,
                 cekilis_override=aday.get("cekilis"),
+                telegram_gonderildi=not yakin_erken_mesaj,
             )
             aday["teyit_gonderildi"] = True
-            telegram_gonder(mesaj_uret(event))
+            if not yakin_erken_mesaj:
+                telegram_gonder(mesaj_uret(event))
             continue
 
         erken_ust = ERKEN_DONUS_MAX_DERIN if tip == "derin" else ERKEN_DONUS_MAX_SAATLIK
