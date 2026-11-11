@@ -5,7 +5,9 @@ BTCTurk İki Dönüş Gölge Motoru
 2) 🔄 SAATLERCE DÜŞÜP DÖNEN: birkaç saatlik düşüş sonrası dönüş.
 
 Erken aday ve normal teyit yalnız gölgede ölçülür. Telegram'a sadece
-"EN GÜÇLÜ" dönüş sınıfı gönderilir.
+iki yolun kendi yapısına göre seçilen "EN GÜÇLÜ" dönüş sınıfı gönderilir:
+- Saat içi: erken tepkinin kaliteli ve kovalanmamış hali.
+- Saatlerce düşen: normal teyit almış daha güvenli dönüş.
 Özel API, bakiye, gerçek AL/SAT veya otomatik emir içermez.
 """
 
@@ -50,15 +52,26 @@ TEYIT_ORDERBOOK_MIN = 1.10
 TEYIT_HACIM_MIN = 1.30
 
 # Telegram'a çıkacak tek sınıf: EN GÜÇLÜ DÖNÜŞ.
-# Normal teyit bu kapıyı geçmezse yalnız gölgede kaydedilmeye devam eder.
-EN_GUCLU_DONUS_MAX = 2.20
-EN_GUCLU_D3_MIN = 0.25
-EN_GUCLU_D5_MIN = 0.35
-EN_GUCLU_HACIM_MIN = 1.50
-EN_GUCLU_ORDERBOOK_MIN = 1.20
-EN_GUCLU_HIZ_MIN = 0.15
-EN_GUCLU_SPREAD_MAX = 0.20
-EN_GUCLU_MUM_GOVDE_MIN = 0.15
+# Üç günlük sonuç iki yolun aynı kapıyla seçilmemesi gerektiğini gösterdi.
+# Saat içi yol erken tepkiyi, derin yol ise normal teyidi esas alır.
+SAATLIK_GUCLU_DONUS_MIN = 0.45
+SAATLIK_GUCLU_DONUS_MAX = 1.35
+SAATLIK_GUCLU_D3_MIN = -0.30
+SAATLIK_GUCLU_D5_MIN = -0.60
+SAATLIK_GUCLU_HACIM_MIN = 0.80
+SAATLIK_GUCLU_ORDERBOOK_MIN = 1.10
+SAATLIK_GUCLU_HIZ_MIN = 0.12
+SAATLIK_GUCLU_SPREAD_MAX = 0.22
+
+DERIN_GUCLU_DONUS_MIN = 0.90
+DERIN_GUCLU_DONUS_MAX = 2.20
+DERIN_GUCLU_D3_MIN = 0.05
+DERIN_GUCLU_D5_MIN = 0.05
+DERIN_GUCLU_HACIM_MIN = 1.30
+DERIN_GUCLU_ORDERBOOK_MIN = 1.15
+DERIN_GUCLU_HIZ_MIN = 0.00
+DERIN_GUCLU_SPREAD_MAX = 0.20
+
 EN_GUCLU_BTC_5DK_MIN = -0.75
 EN_GUCLU_PIYASA_5DK_MIN = -0.60
 
@@ -342,12 +355,13 @@ def mesaj_uret(event):
     coin = str(event["symbol"]).replace("TRY", "")
     asama = event.get("asama", "teyitli")
     if event["tip"] == "derin":
-        baslik = "🏆🔄 SAATLERCE DÜŞÜP DÖNEN — EN GÜÇLÜ"
+        baslik = "🏆🔄 SAATLERCE DÜŞÜP DÖNEN — TEYİTLİ EN GÜÇLÜ"
         sure = "birkaç saatlik düşüş"
+        durum = "✅ Birkaç saatlik düşüş sonrası 3/5dk momentum ve dönüş teyidi alındı."
     else:
-        baslik = "🏆⚡ SAAT İÇİ DÖNÜŞ — EN GÜÇLÜ"
+        baslik = "🏆⚡ SAAT İÇİ ERKEN DÖNÜŞ — EN GÜÇLÜ"
         sure = "15–60dk çekiliş"
-    durum = "✅ Momentum + hacim + derinlik + canlı hız birlikte teyit edildi."
+        durum = "✅ Erken tepki; canlı hız + derinlik + spread kalitesiyle seçildi."
     return (
         f"{baslik}\n"
         f"{coin}\n"
@@ -379,20 +393,39 @@ def normal_teyit_mi(donus, oz, ob, hiz):
     )
 
 
-def en_guclu_teyit_mi(donus, oz, ob, hiz, btc5, piyasa5):
-    """Telegram'a gönderilebilen tek ve en sıkı dönüş sınıfı."""
-    return bool(
-        TEYIT_DONUS_MIN <= donus <= EN_GUCLU_DONUS_MAX
-        and oz.get("yesil") and oz.get("teyit")
-        and float(oz.get("govde", 0) or 0) >= EN_GUCLU_MUM_GOVDE_MIN
-        and float(oz.get("d3", 0) or 0) >= EN_GUCLU_D3_MIN
-        and float(oz.get("d5", 0) or 0) >= EN_GUCLU_D5_MIN
-        and float(oz.get("hacim_x", 0) or 0) >= EN_GUCLU_HACIM_MIN
-        and float(ob.get("dengesizlik", 0) or 0) >= EN_GUCLU_ORDERBOOK_MIN
-        and float(ob.get("spread", 99) or 99) <= EN_GUCLU_SPREAD_MAX
-        and hiz >= EN_GUCLU_HIZ_MIN
-        and btc5 >= EN_GUCLU_BTC_5DK_MIN
+def en_guclu_teyit_mi(tip, donus, oz, ob, hiz, btc5, piyasa5):
+    """Her dönüş yolunu kendi başarılı yapısına göre seçer."""
+    piyasa_ok = bool(
+        btc5 >= EN_GUCLU_BTC_5DK_MIN
         and piyasa5 >= EN_GUCLU_PIYASA_5DK_MIN
+    )
+    if not piyasa_ok:
+        return False
+
+    if tip == "saatlik":
+        # Rapor: erken grup +%1/+%1.5 hedeflerinde açık ara daha başarılı.
+        # Pozitif 3/5dk zorunluluğu koyulmaz; bu, erken avantajı yok eder.
+        return bool(
+            SAATLIK_GUCLU_DONUS_MIN <= donus <= SAATLIK_GUCLU_DONUS_MAX
+            and float(oz.get("d3", 0) or 0) >= SAATLIK_GUCLU_D3_MIN
+            and float(oz.get("d5", 0) or 0) >= SAATLIK_GUCLU_D5_MIN
+            and float(oz.get("hacim_x", 0) or 0) >= SAATLIK_GUCLU_HACIM_MIN
+            and float(ob.get("dengesizlik", 0) or 0) >= SAATLIK_GUCLU_ORDERBOOK_MIN
+            and float(ob.get("spread", 99) or 99) <= SAATLIK_GUCLU_SPREAD_MAX
+            and hiz >= SAATLIK_GUCLU_HIZ_MIN
+        )
+
+    # Rapor: saatlerce düşenlerde normal teyit, erken girişten daha güvenli.
+    # Bu yol yeşil/teyitli mum ve pozitif 3/5dk olmadan Telegram'a çıkmaz.
+    return bool(
+        DERIN_GUCLU_DONUS_MIN <= donus <= DERIN_GUCLU_DONUS_MAX
+        and oz.get("yesil") and oz.get("teyit")
+        and float(oz.get("d3", 0) or 0) >= DERIN_GUCLU_D3_MIN
+        and float(oz.get("d5", 0) or 0) >= DERIN_GUCLU_D5_MIN
+        and float(oz.get("hacim_x", 0) or 0) >= DERIN_GUCLU_HACIM_MIN
+        and float(ob.get("dengesizlik", 0) or 0) >= DERIN_GUCLU_ORDERBOOK_MIN
+        and float(ob.get("spread", 99) or 99) <= DERIN_GUCLU_SPREAD_MAX
+        and hiz >= DERIN_GUCLU_HIZ_MIN
     )
 
 
@@ -467,10 +500,10 @@ def gunluk_rapor_gerekirse():
     siniflar = (
         ("saatlik", "erken", "⚡ Saat İçi — Erken/Gölge"),
         ("saatlik", "teyitli", "⚡ Saat İçi — Normal Teyit/Gölge"),
-        ("saatlik", "en_guclu", "🏆⚡ Saat İçi — En Güçlü/Gönderilen"),
+        ("saatlik", "en_guclu", "🏆⚡ Saat İçi — Erken Güçlü/Gönderilen"),
         ("derin", "erken", "🔄 Saatlerce Düşen — Erken/Gölge"),
         ("derin", "teyitli", "🔄 Saatlerce Düşen — Normal Teyit/Gölge"),
-        ("derin", "en_guclu", "🏆🔄 Saatlerce Düşen — En Güçlü/Gönderilen"),
+        ("derin", "en_guclu", "🏆🔄 Saatlerce Düşen — Teyitli Güçlü/Gönderilen"),
     )
     for tip, asama, ad in siniflar:
         g = [
@@ -498,7 +531,7 @@ def gunluk_rapor_gerekirse():
         f"sonradan +%1 %{oran(gec,1):.1f} | +%2 %{oran(gec,2):.1f}"
     )
     satirlar.append(
-        "• Telegram'a yalnız EN GÜÇLÜ sınıfı gönderilir; erken ve normal teyit gölgede ölçülür. Gerçek emir yok."
+        "• Saat içi EN GÜÇLÜ erken tepki kalitesinden; saatlerce düşen EN GÜÇLÜ normal teyitten seçilir. Diğerleri gölgede ölçülür. Gerçek emir yok."
     )
     telegram_gonder("\n".join(satirlar))
     META["son_rapor"] = simdi
@@ -619,7 +652,7 @@ def hizli_adaylari_takip(ticker):
         derin = aday.get("derin") or {}
         fiyat = float(ob.get("ask", 0) or bilgi["fiyat"])
 
-        en_guclu = en_guclu_teyit_mi(donus, oz, ob, hiz, btc5, piyasa5)
+        en_guclu = en_guclu_teyit_mi(tip, donus, oz, ob, hiz, btc5, piyasa5)
         son_guclu = son_mesaj_zamani(symbol, tip, "en_guclu")
         if en_guclu and not aday.get("guclu_gonderildi") and simdi - son_guclu >= soguma:
             event = kayit_ac(
@@ -758,7 +791,8 @@ def main():
     telegram_gonder(
         "✅ İki Dönüş Gölge Motoru başladı.\n"
         "⚡ Saat İçi Dönüş + 🔄 Saatlerce Düşüp Dönen izleniyor.\n"
-        "🏆 Telegram'a yalnız EN GÜÇLÜ dönüş gönderilir.\n"
+        "🏆 Saat içi: erken kalitesi güçlü olan gönderilir.\n"
+        "🏆 Saatlerce düşen: yalnız teyitli güçlü olan gönderilir.\n"
         "🎯 Gönderilen sinyal +%3 olursa tek hedef mesajı gelir.\n"
         "Erken aday ve normal teyit gölgede ölçülür.\n"
         "Gerçek emir yok."
