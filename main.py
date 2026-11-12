@@ -1,8 +1,10 @@
 """
-BTCTurk İki Dönüş Gölge Motoru
+BTCTurk Üç Dönüş Gölge Motoru
 
 1) ⚡ SAAT İÇİ DÖNÜŞ: 15-60 dakikalık sert çekilme sonrası dönüş.
 2) 🔄 SAATLERCE DÜŞÜP DÖNEN: birkaç saatlik düşüş sonrası dönüş.
+3) 🚀↩️ GÜÇLÜ YÜKSELİŞ GERİ ÇEKİLMESİ: güçlü hamle sonrası sağlıklı
+   geri çekilmenin yeniden yukarı dönmesi.
 
 Erken aday ve normal teyit yalnız gölgede ölçülür. Telegram'a sadece
 iki yolun kendi yapısına göre seçilen "EN GÜÇLÜ" dönüş sınıfı gönderilir:
@@ -71,6 +73,24 @@ DERIN_GUCLU_HACIM_MIN = 1.30
 DERIN_GUCLU_ORDERBOOK_MIN = 1.15
 DERIN_GUCLU_HIZ_MIN = 0.00
 DERIN_GUCLU_SPREAD_MAX = 0.20
+
+# Güçlü yükseliş sonrası geri çekilme:
+# Önce belirgin bir yükseliş ve hacim hamlesi görülür. Zirveden çekilme
+# yaşandıktan sonra yalnız canlı fiyat yeniden yukarı dönerse mesaj üretilir.
+TREND_YUKSELIS_MIN = 4.00
+TREND_CEKILIS_MIN = 1.80
+TREND_CEKILIS_MAX = 8.00
+TREND_TEPE_YAS_MAX = 30
+TREND_HAMLE_HACIM_MIN = 1.50
+TREND_KORUMA_MIN = 1.00
+TREND_GUCLU_DONUS_MIN = 0.45
+TREND_GUCLU_DONUS_MAX = 1.60
+TREND_GUCLU_D3_MIN = -3.00
+TREND_GUCLU_D5_MIN = -5.00
+TREND_GUCLU_HACIM_MIN = 0.50
+TREND_GUCLU_ORDERBOOK_MIN = 1.10
+TREND_GUCLU_HIZ_MIN = 0.12
+TREND_GUCLU_SPREAD_MAX = 0.22
 
 EN_GUCLU_BTC_5DK_MIN = -0.75
 EN_GUCLU_PIYASA_5DK_MIN = -0.60
@@ -285,11 +305,42 @@ def temel_1dk_ozet(d):
     donus = pct(c[i], dip15)
     yesil = c[i] > o[i] and c[i] > c[i - 1]
     onceki_teyit = c[i] >= h[i - 1] or (govde >= 0.18 and d3 > 0)
+
+    # Güçlü yükseliş -> zirveden geri çekilme -> yeniden dönüş profili.
+    # Yalnız son 30 dakikada oluşan tepe kullanılır; eski yükseliş kovalanmaz.
+    i_abs = len(c) - 2
+    bas = max(0, i_abs - 45)
+    tepe_aralik = h[bas:i_abs + 1]
+    tepe_idx = bas + max(range(len(tepe_aralik)), key=lambda j: tepe_aralik[j])
+    tepe = float(h[tepe_idx])
+    tepe_yasi = i_abs - tepe_idx
+    baz_son = max(bas + 1, tepe_idx - 4)
+    baz_aralik = l[bas:baz_son]
+    trend_baz = min(baz_aralik) if baz_aralik else float(l[bas])
+    geri_aralik = l[tepe_idx + 1:i_abs + 1]
+    trend_geri_dip = min(geri_aralik) if geri_aralik else float(l[i_abs])
+    trend_yukselis = pct(tepe, trend_baz)
+    trend_cekilis = pct(trend_geri_dip, tepe)
+    trend_donus = pct(c[i_abs], trend_geri_dip)
+    trend_koruma = pct(c[i_abs], trend_baz)
+
+    baz_hacimler = v[max(0, tepe_idx - 35):max(1, tepe_idx - 5)]
+    baz_hacim = statistics.median(baz_hacimler) if baz_hacimler else 0
+    hamle_hacimler = v[max(0, tepe_idx - 5):tepe_idx + 1]
+    hamle_hacim_x = max(hamle_hacimler) / baz_hacim if baz_hacim > 0 and hamle_hacimler else 0
+
     return {
         "kapanis": c[i], "mum_zamani": t[i], "hacim_x": hacim_x,
         "govde": govde, "d3": d3, "d5": d5, "tepe60": tepe60,
         "dip15": dip15, "cekilis": cekilis, "donus": donus,
         "yesil": yesil, "teyit": onceki_teyit,
+        "trend_yukselis": trend_yukselis,
+        "trend_cekilis": trend_cekilis,
+        "trend_donus": trend_donus,
+        "trend_koruma": trend_koruma,
+        "trend_geri_dip": trend_geri_dip,
+        "trend_tepe_yasi": tepe_yasi,
+        "trend_hamle_hacim_x": hamle_hacim_x,
     }
 
 
@@ -328,8 +379,12 @@ def kayit_ac(
     asama="teyitli", donus_override=None, cekilis_override=None,
     telegram_gonderildi=True, hiz=None,
 ):
-    cekilis = derin.get("cekilis") if tip == "derin" else oz.get("cekilis")
-    donus = derin.get("donus") if tip == "derin" else oz.get("donus")
+    if tip == "derin":
+        cekilis, donus = derin.get("cekilis"), derin.get("donus")
+    elif tip == "trend_geri":
+        cekilis, donus = oz.get("trend_cekilis"), oz.get("trend_donus")
+    else:
+        cekilis, donus = oz.get("cekilis"), oz.get("donus")
     if cekilis_override is not None:
         cekilis = cekilis_override
     if donus_override is not None:
@@ -344,6 +399,8 @@ def kayit_ac(
         "hacim_x": oz.get("hacim_x"), "d3": oz.get("d3"), "d5": oz.get("d5"),
         "spread": ob.get("spread"), "orderbook": ob.get("dengesizlik"),
         "btc5": btc5, "piyasa5": piyasa5, "canli_hiz": hiz,
+        "onceki_yukselis": oz.get("trend_yukselis") if tip == "trend_geri" else None,
+        "hamle_hacim_x": oz.get("trend_hamle_hacim_x") if tip == "trend_geri" else None,
     }
     KAYITLAR.append(event)
     del KAYITLAR[:-4000]
@@ -358,14 +415,23 @@ def mesaj_uret(event):
         baslik = "🏆🔄 SAATLERCE DÜŞÜP DÖNEN — TEYİTLİ EN GÜÇLÜ"
         sure = "birkaç saatlik düşüş"
         durum = "✅ Birkaç saatlik düşüş sonrası 3/5dk momentum ve dönüş teyidi alındı."
+    elif event["tip"] == "trend_geri":
+        baslik = "🏆🚀↩️ GÜÇLÜ YÜKSELİŞ GERİ ÇEKİLMESİ — DÖNÜŞ TEYİTLİ"
+        sure = "zirveden geri çekilme"
+        durum = "✅ Güçlü yükseliş sonrası geri çekilme bitti; canlı dönüş ve alış derinliği teyit edildi."
     else:
         baslik = "🏆⚡ SAAT İÇİ ERKEN DÖNÜŞ — EN GÜÇLÜ"
         sure = "15–60dk çekiliş"
         durum = "✅ Erken tepki; canlı hız + derinlik + spread kalitesiyle seçildi."
+    onceki_yukselis_satiri = (
+        f"🚀 Önceki yükseliş: %{float(event.get('onceki_yukselis', 0) or 0):+.2f}\n"
+        if event.get("tip") == "trend_geri" else ""
+    )
     return (
         f"{baslik}\n"
         f"{coin}\n"
         f"💰 Fiyat: {event['giris']:.8g}\n"
+        f"{onceki_yukselis_satiri}"
         f"📉 {sure}: %{float(event.get('cekilis', 0)):.2f}\n"
         f"📈 Dipten dönüş: %{float(event.get('donus', 0)):+.2f}\n"
         f"🟢 3dk: %{float(event.get('d3', 0)):+.2f} | 5dk: %{float(event.get('d5', 0)):+.2f}\n"
@@ -415,6 +481,25 @@ def en_guclu_teyit_mi(tip, donus, oz, ob, hiz, btc5, piyasa5):
             and hiz >= SAATLIK_GUCLU_HIZ_MIN
         )
 
+    if tip == "trend_geri":
+        # Kırmızı mumun kendisi sinyal değildir. Önceki yükseliş/hacim yapısı
+        # korunmalı; dipten canlı fiyat dönüşü ve alış derinliği birlikte gelmeli.
+        return bool(
+            TREND_GUCLU_DONUS_MIN <= donus <= TREND_GUCLU_DONUS_MAX
+            and float(oz.get("trend_yukselis", 0) or 0) >= TREND_YUKSELIS_MIN
+            and -TREND_CEKILIS_MAX <= float(oz.get("trend_cekilis", 0) or 0) <= -TREND_CEKILIS_MIN
+            and int(oz.get("trend_tepe_yasi", 999) or 999) <= TREND_TEPE_YAS_MAX
+            and float(oz.get("trend_koruma", 0) or 0) >= TREND_KORUMA_MIN
+            and float(oz.get("trend_hamle_hacim_x", 0) or 0) >= TREND_HAMLE_HACIM_MIN
+            and float(oz.get("d3", 0) or 0) >= TREND_GUCLU_D3_MIN
+            and float(oz.get("d5", 0) or 0) >= TREND_GUCLU_D5_MIN
+            and float(oz.get("hacim_x", 0) or 0) >= TREND_GUCLU_HACIM_MIN
+            and float(ob.get("dengesizlik", 0) or 0) >= TREND_GUCLU_ORDERBOOK_MIN
+            and float(ob.get("spread", 99) or 99) <= TREND_GUCLU_SPREAD_MAX
+            and hiz >= TREND_GUCLU_HIZ_MIN
+            and (oz.get("yesil") or hiz >= TREND_GUCLU_HIZ_MIN + 0.08)
+        )
+
     # Rapor: saatlerce düşenlerde normal teyit, erken girişten daha güvenli.
     # Bu yol yeşil/teyitli mum ve pozitif 3/5dk olmadan Telegram'a çıkmaz.
     return bool(
@@ -462,7 +547,11 @@ def takip_guncelle(ticker):
             kaynak = (
                 "🏆🔄 Saatlerce Düşüp Dönen — En Güçlü"
                 if k.get("tip") == "derin"
-                else "🏆⚡ Saat İçi Dönüş — En Güçlü"
+                else (
+                    "🏆🚀↩️ Güçlü Yükseliş Geri Çekilmesi — Dönüş Teyitli"
+                    if k.get("tip") == "trend_geri"
+                    else "🏆⚡ Saat İçi Dönüş — En Güçlü"
+                )
             )
             hedef_bildirimleri.append(
                 "🎯 +%3 HEDEF GÖRÜLDÜ — " + coin + "\n"
@@ -496,7 +585,7 @@ def gunluk_rapor_gerekirse():
         k for k in KAYITLAR
         if k.get("tamamlandi") and simdi - float(k.get("zaman", 0) or 0) <= 3 * 24 * 60 * 60
     ]
-    satirlar = ["📊 3 GÜNLÜK İKİ DÖNÜŞ GÖLGE RAPORU"]
+    satirlar = ["📊 3 GÜNLÜK ÜÇ DÖNÜŞ GÖLGE RAPORU"]
     siniflar = (
         ("saatlik", "erken", "⚡ Saat İçi — Erken/Gölge"),
         ("saatlik", "teyitli", "⚡ Saat İçi — Normal Teyit/Gölge"),
@@ -504,6 +593,9 @@ def gunluk_rapor_gerekirse():
         ("derin", "erken", "🔄 Saatlerce Düşen — Erken/Gölge"),
         ("derin", "teyitli", "🔄 Saatlerce Düşen — Normal Teyit/Gölge"),
         ("derin", "en_guclu", "🏆🔄 Saatlerce Düşen — Teyitli Güçlü/Gönderilen"),
+        ("trend_geri", "erken", "🚀↩️ Güçlü Yükseliş Geri Çekilmesi — Erken/Gölge"),
+        ("trend_geri", "teyitli", "🚀↩️ Güçlü Yükseliş Geri Çekilmesi — Normal Teyit/Gölge"),
+        ("trend_geri", "en_guclu", "🏆🚀↩️ Güçlü Yükseliş Geri Çekilmesi — Gönderilen"),
     )
     for tip, asama, ad in siniflar:
         g = [
@@ -531,7 +623,7 @@ def gunluk_rapor_gerekirse():
         f"sonradan +%1 %{oran(gec,1):.1f} | +%2 %{oran(gec,2):.1f}"
     )
     satirlar.append(
-        "• Saat içi EN GÜÇLÜ erken tepki kalitesinden; saatlerce düşen EN GÜÇLÜ normal teyitten seçilir. Diğerleri gölgede ölçülür. Gerçek emir yok."
+        "• Saat içi erken tepki, saatlerce düşen teyitli dönüş ve güçlü yükseliş sonrası geri çekilme ayrı ölçülür. Gerçek emir yok."
     )
     telegram_gonder("\n".join(satirlar))
     META["son_rapor"] = simdi
@@ -679,7 +771,11 @@ def hizli_adaylari_takip(ticker):
                 aday["teyit_kayitli"] = True
             continue
 
-        erken_ust = ERKEN_DONUS_MAX_DERIN if tip == "derin" else ERKEN_DONUS_MAX_SAATLIK
+        erken_ust = (
+            ERKEN_DONUS_MAX_DERIN
+            if tip == "derin"
+            else (TREND_GUCLU_DONUS_MAX if tip == "trend_geri" else ERKEN_DONUS_MAX_SAATLIK)
+        )
         erken = bool(
             ERKEN_DONUS_MIN <= donus <= erken_ust
             and hiz >= ERKEN_HIZ_MIN
@@ -749,7 +845,19 @@ def tara():
         saatlik_aday = bool(
             -SAATLIK_CEKILIS_MAX <= oz.get("cekilis", 0) <= -SAATLIK_CEKILIS_MIN
         )
-        yeni_tip = "derin" if derin_aday else ("saatlik" if saatlik_aday else None)
+        trend_geri_aday = bool(
+            float(oz.get("trend_yukselis", 0) or 0) >= TREND_YUKSELIS_MIN
+            and -TREND_CEKILIS_MAX
+            <= float(oz.get("trend_cekilis", 0) or 0)
+            <= -TREND_CEKILIS_MIN
+            and int(oz.get("trend_tepe_yasi", 999) or 999) <= TREND_TEPE_YAS_MAX
+            and float(oz.get("trend_koruma", 0) or 0) >= TREND_KORUMA_MIN
+            and float(oz.get("trend_hamle_hacim_x", 0) or 0) >= TREND_HAMLE_HACIM_MIN
+        )
+        yeni_tip = (
+            "trend_geri" if trend_geri_aday
+            else ("derin" if derin_aday else ("saatlik" if saatlik_aday else None))
+        )
         tip = mevcut.get("tip") if mevcut else yeni_tip
         if not tip:
             continue
@@ -757,10 +865,15 @@ def tara():
         if mevcut and not yeni_tip:
             # Profil bandından çıksa da önceden yakalanan aday süre sonuna kadar izlenir.
             continue
-        dip = float(derin.get("dip2s", 0) if tip == "derin" else oz.get("dip15", 0) or 0)
-        cekilis = float(
-            derin.get("cekilis", 0) if tip == "derin" else oz.get("cekilis", 0) or 0
-        )
+        if tip == "derin":
+            dip = float(derin.get("dip2s", 0) or 0)
+            cekilis = float(derin.get("cekilis", 0) or 0)
+        elif tip == "trend_geri":
+            dip = float(oz.get("trend_geri_dip", 0) or 0)
+            cekilis = float(oz.get("trend_cekilis", 0) or 0)
+        else:
+            dip = float(oz.get("dip15", 0) or 0)
+            cekilis = float(oz.get("cekilis", 0) or 0)
         if dip <= 0:
             continue
         if mevcut:
@@ -789,10 +902,11 @@ def tara():
 
 def main():
     telegram_gonder(
-        "✅ İki Dönüş Gölge Motoru başladı.\n"
-        "⚡ Saat İçi Dönüş + 🔄 Saatlerce Düşüp Dönen izleniyor.\n"
+        "✅ Üç Dönüş Gölge Motoru başladı.\n"
+        "⚡ Saat İçi + 🔄 Saatlerce Düşen + 🚀↩️ Güçlü Yükseliş Geri Çekilmesi izleniyor.\n"
         "🏆 Saat içi: erken kalitesi güçlü olan gönderilir.\n"
         "🏆 Saatlerce düşen: yalnız teyitli güçlü olan gönderilir.\n"
+        "🏆 Güçlü yükseliş geri çekilmesi: dipten dönüş teyit edilince gönderilir.\n"
         "🎯 Gönderilen sinyal +%3 olursa tek hedef mesajı gelir.\n"
         "Erken aday ve normal teyit gölgede ölçülür.\n"
         "Gerçek emir yok."
