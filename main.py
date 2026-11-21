@@ -44,9 +44,11 @@ ARDISIK_TARAMA_GECIS = 2
 MIN_TEYIT_PUANI = 4
 MIN_RISK_GETIRI = 0.90
 TAHMINI_TOPLAM_MALIYET = float(os.getenv("TAHMINI_TOPLAM_MALIYET", "0.40"))
-BIRLESIK_SURUM = "BIRLESIK_V1"
-TELEGRAM_SINYAL_AKTIF = os.getenv("BIRLESIK_TELEGRAM_AKTIF", "0").strip() == "1"
-GOLGE_MIN_SURESI = 3 * 24 * 60 * 60
+BIRLESIK_SURUM = "BIRLESIK_V2_SECICI_DERIN"
+# Üç günlük gölge ölçümü tamamlandı. Canlı Telegram yalnız aşağıdaki
+# Saatlerce Düşen — Normal Teyit yolunda açılır; diğer yollar gölgede kalır.
+TELEGRAM_SINYAL_AKTIF = True
+GOLGE_MIN_SURESI = 0
 BENZERSIZ_HAREKET_KILIDI = 3 * 60 * 60
 
 # Ön havuz ve gerçek zamanlı dönüş aşamaları. İlk tarama yalnız adayı bulur;
@@ -147,6 +149,7 @@ DERIN_SOGUMA = 6 * 60 * 60
 SONUC_SURESI = 3 * 60 * 60
 YANLIS_ESIK = -1.00
 HEDEFLER = (1.0, 1.5, 2.0, 3.0)
+CANLI_HEDEF_BILDIRIMLERI = (1.5, 2.0, 3.0)
 
 _RAILWAY_VOLUME = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
 _DATA_DIR = _RAILWAY_VOLUME if _RAILWAY_VOLUME else ("/data" if os.path.isdir("/data") else ".")
@@ -739,29 +742,32 @@ def takip_guncelle(ticker):
         bozulma = float(k.get("bozulma", 0) or 0)
         if bozulma > 0 and fiyat <= bozulma and not k.get("bozuldu_zamani"):
             k["bozuldu_zamani"] = simdi
-        if (
-            k.get("telegram_gonderildi")
-            and float(k.get("max_getiri", 0) or 0) >= 3.0
-            and not k.get("hedef3_bildirildi")
-        ):
-            k["hedef3_bildirildi"] = True
-            k["hedef3_zamani"] = simdi
+        # Canlı seçici derin dönüşte +%1,5 / +%2 / +%3 hedeflerini bildir.
+        # Fiyat tek taramada birkaç hedefi aşarsa mesaj yağmuru oluşturmamak
+        # için yalnız en yüksek yeni hedef gönderilir; alttakiler tamamlandı
+        # sayılır.
+        yeni_hedefler = [
+            hedef for hedef in CANLI_HEDEF_BILDIRIMLERI
+            if (
+                k.get("telegram_gonderildi")
+                and getiri >= hedef
+                and not k.get("bildirim_hedef_" + str(hedef).replace(".", "_"))
+            )
+        ]
+        if yeni_hedefler:
+            bildirilecek_hedef = max(yeni_hedefler)
+            for hedef in CANLI_HEDEF_BILDIRIMLERI:
+                if hedef <= bildirilecek_hedef:
+                    k["bildirim_hedef_" + str(hedef).replace(".", "_")] = True
             coin = str(k.get("symbol", "")).replace("TRY", "")
-            kaynak = (
-                "🏆🔄 Saatlerce Düşüp Dönen — En Güçlü"
-                if k.get("tip") == "derin"
-                else (
-                    "🏆🚀↩️ Güçlü Yükseliş Geri Çekilmesi — Dönüş Teyitli"
-                    if k.get("tip") == "trend_geri"
-                    else (
-                        "🏆🌱⚡ Yeni Hızlanma — En Güçlü"
-                        if k.get("tip") == "hizlanma"
-                        else "🏆⚡ Saat İçi Dönüş — En Güçlü"
-                    )
-                )
+            kaynak = "🔄 Saatlerce Düşen — Normal Teyit"
+            hedef_yazi = (
+                str(int(bildirilecek_hedef))
+                if float(bildirilecek_hedef).is_integer()
+                else str(bildirilecek_hedef).replace(".", ",")
             )
             hedef_bildirimleri.append(
-                "🎯 +%3 HEDEF GÖRÜLDÜ — " + coin + "\n"
+                "🎯 +%" + hedef_yazi + " HEDEF GÖRÜLDÜ — " + coin + "\n"
                 + kaynak + "\n"
                 + f"Başlangıç: {giris:.8g} | Güncel: {fiyat:.8g}\n"
                 + f"Getiri: %{getiri:+.2f}"
@@ -1227,10 +1233,10 @@ def tara():
 def main():
     telegram_gonder(
         "✅ Birleşik Hareket Motoru başladı.\n"
-        "🔄 Saatlerce Düşen Normal Teyit + 🚀 Güçlü Devam + 🌱 Yeni Hızlanma + "
-        "🚀↩️ Trend Geri Çekilmesi + ⚡ Saat İçi izleniyor.\n"
-        "🔕 Eski çift teyitli/geri çekilme sonrası/erken güçlü yollar Telegram üretmez.\n"
-        "🧪 İlk üç gün bütün yollar gölgede ve tek veri dosyasında ölçülür.\n"
+        f"🧾 Sürüm: {BIRLESIK_SURUM}\n"
+        "📨 Telegram: yalnız 🔄 Saatlerce Düşen — Normal Teyit.\n"
+        "🎯 Hedefler: +%1,5 / +%2 / +%3.\n"
+        "🔕 Güçlü Devam, Yeni Hızlanma, Trend Geri Çekilmesi ve Saat İçi yalnız gölgede.\n"
         "🔒 Aynı coin-hareket için 3 saat tekrar kilidi uygulanır.\n"
         "Gerçek emir yok."
     )
